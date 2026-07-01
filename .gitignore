@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+chroma_data/
+chroma_data_test/
+.env

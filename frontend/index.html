@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Realtime Weather Insights — Leonardo Vasone</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0a0e14; --bg-alt:#0d1320; --panel:#111826; --panel-border:#1f2b3d;
+    --text:#e8edf5; --text-dim:#8a96a8; --accent:#00e5c7; --accent-2:#5b8cff; --danger:#ff5c72;
+    --radius:14px; --mono:'JetBrains Mono','SFMono-Regular',Consolas,monospace;
+    --font:'Space Grotesk',system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{ background:var(--bg); color:var(--text); font-family:var(--font); line-height:1.5; padding:28px; }
+  header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:24px; flex-wrap:wrap; gap:12px; }
+  h1{ font-size:1.4rem; font-weight:700; }
+  h1 span{ color:var(--accent); }
+  .status{ display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:0.8rem; color:var(--text-dim); }
+  .dot{ width:9px; height:9px; border-radius:50%; background:var(--danger); }
+  .dot.on{ background:var(--accent); box-shadow:0 0 8px var(--accent); }
+  .layout{ display:grid; grid-template-columns:2fr 1fr; gap:24px; align-items:start; }
+  .cities-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(200px,1fr)); gap:14px; margin-bottom:20px; }
+  .city-card{ background:var(--panel); border:1px solid var(--panel-border); border-radius:var(--radius); padding:16px; }
+  .city-card h3{ font-size:0.95rem; margin-bottom:8px; }
+  .city-card .temp{ font-size:1.6rem; font-weight:700; }
+  .city-card .metrics{ margin-top:8px; font-size:0.78rem; color:var(--text-dim); font-family:var(--mono); display:flex; flex-direction:column; gap:3px; }
+  .city-card.flagged{ border-color:var(--danger); }
+  .chart-wrap{ background:var(--panel); border:1px solid var(--panel-border); border-radius:var(--radius); padding:18px; height:340px; }
+  .insights-panel{ background:var(--panel); border:1px solid var(--panel-border); border-radius:var(--radius); padding:18px; max-height:700px; overflow-y:auto; }
+  .insights-panel h2{ font-size:1rem; margin-bottom:14px; }
+  .insight{ border-left:2px solid var(--panel-border); padding:8px 0 8px 12px; margin-bottom:10px; font-size:0.82rem; }
+  .insight.anomaly{ border-left-color:var(--danger); }
+  .insight.similar{ border-left-color:var(--accent-2); }
+  .insight .tag{ font-family:var(--mono); font-size:0.68rem; letter-spacing:0.04em; color:var(--text-dim); display:block; margin-bottom:2px; }
+  .insight.anomaly .tag{ color:var(--danger); }
+  .insight.similar .tag{ color:var(--accent-2); }
+  .empty{ color:var(--text-dim); font-size:0.85rem; }
+  footer{ margin-top:20px; font-size:0.75rem; color:var(--text-dim); font-family:var(--mono); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Realtime Weather <span>Insights</span></h1>
+  <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">conectando...</span></div>
+</header>
+
+<div class="cities-grid" id="citiesGrid"></div>
+
+<div class="layout">
+  <div class="chart-wrap"><canvas id="tempChart"></canvas></div>
+  <div class="insights-panel">
+    <h2>// AI Insights</h2>
+    <div id="insightsFeed"><p class="empty">Aguardando primeira leitura...</p></div>
+  </div>
+</div>
+
+<footer>Fonte: Open-Meteo (dados públicos, tempo real) · Anomalias: z-score sobre janela móvel · Padrões similares: busca vetorial (ChromaDB)</footer>
+
+<script>
+const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const citiesGrid = document.getElementById('citiesGrid');
+const insightsFeed = document.getElementById('insightsFeed');
+
+const cityCards = {};
+const cityColors = ['#00e5c7','#5b8cff','#ff5c72','#f5a623','#a78bfa','#34d399'];
+const colorForCity = {};
+let colorIdx = 0;
+
+function getColor(city){
+  if(!colorForCity[city]) colorForCity[city] = cityColors[colorIdx++ % cityColors.length];
+  return colorForCity[city];
+}
+
+const ctx = document.getElementById('tempChart').getContext('2d');
+const chart = new Chart(ctx, {
+  type: 'line',
+  data: { datasets: [] },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    animation: false,
+    scales: {
+      x: { type: 'category', ticks: { color: '#8a96a8', maxTicksLimit: 8 }, grid: { color: '#1f2b3d' } },
+      y: { ticks: { color: '#8a96a8' }, grid: { color: '#1f2b3d' }, title: { display: true, text: '°C', color: '#8a96a8' } }
+    },
+    plugins: { legend: { labels: { color: '#e8edf5', font: { size: 10 } } } }
+  }
+});
+
+function ensureCityCard(city){
+  if(cityCards[city]) return cityCards[city];
+  const el = document.createElement('div');
+  el.className = 'city-card';
+  el.innerHTML = `<h3>${city}</h3><div class="temp">--°C</div><div class="metrics"></div>`;
+  citiesGrid.appendChild(el);
+  cityCards[city] = el;
+  return el;
+}
+
+function ensureDataset(city){
+  let ds = chart.data.datasets.find(d => d.label === city);
+  if(!ds){
+    ds = { label: city, data: [], borderColor: getColor(city), backgroundColor: 'transparent', tension: 0.3, pointRadius: 2 };
+    chart.data.datasets.push(ds);
+  }
+  return ds;
+}
+
+function addInsight(html, cls){
+  const el = document.createElement('div');
+  el.className = 'insight ' + cls;
+  el.innerHTML = html;
+  insightsFeed.prepend(el);
+  const empty = insightsFeed.querySelector('.empty');
+  if(empty) empty.remove();
+  while(insightsFeed.children.length > 40) insightsFeed.removeChild(insightsFeed.lastChild);
+}
+
+function handleReading(msg){
+  const r = msg.reading;
+  const card = ensureCityCard(r.city);
+  card.classList.toggle('flagged', msg.anomalies && msg.anomalies.length > 0);
+  card.querySelector('.temp').textContent = r.temperature_c.toFixed(1) + '°C';
+  card.querySelector('.metrics').innerHTML =
+    `umidade: ${r.humidity_pct}% &nbsp; vento: ${r.wind_speed_kmh} km/h<br>` +
+    `pressão: ${r.pressure_hpa} hPa &nbsp; nuvens: ${r.cloud_cover_pct}%`;
+
+  const label = new Date(r.timestamp).toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+  if(!chart.data.labels.includes(label)) chart.data.labels.push(label);
+  if(chart.data.labels.length > 30) chart.data.labels.shift();
+  const ds = ensureDataset(r.city);
+  ds.data.push(r.temperature_c);
+  if(ds.data.length > 30) ds.data.shift();
+  chart.update('none');
+
+  (msg.anomalies || []).forEach(a => {
+    addInsight(`<span class="tag">ANOMALIA · ${r.city}</span>${a.metric} = ${a.value} (z=${a.z_score}, média recente ${a.baseline_mean})`, 'anomaly');
+  });
+  (msg.similar_patterns || []).slice(0,1).forEach(s => {
+    addInsight(`<span class="tag">PADRÃO SIMILAR · ${r.city}</span>parecido com ${s.city} (dist=${s.distance})`, 'similar');
+  });
+}
+
+function connect(){
+  const ws = new WebSocket(WS_URL);
+  ws.onopen = () => { statusDot.classList.add('on'); statusText.textContent = 'ao vivo'; };
+  ws.onclose = () => { statusDot.classList.remove('on'); statusText.textContent = 'reconectando...'; setTimeout(connect, 3000); };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if(msg.type === 'reading') handleReading(msg);
+  };
+}
+connect();
+</script>
+</body>
+</html>
