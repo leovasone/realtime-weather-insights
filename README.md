@@ -19,7 +19,7 @@ and similarity search are built for.
 
 ```
 Open-Meteo API  →  poll loop (60s)  →  anomaly detector (z-score)
-                                     →  vector store (ChromaDB)  →  similarity search
+                                     →  vector store (in-memory)  →  similarity search
                                      ↓
                               WebSocket broadcast  →  browser dashboard (live charts + insights feed)
 ```
@@ -34,10 +34,12 @@ Open-Meteo API  →  poll loop (60s)  →  anomaly detector (z-score)
   explainable: flags a reading when it's more than 2.5 standard deviations
   from its own recent rolling baseline.
 - **`backend/vector_store.py`** — every reading is embedded as a 5-dimensional
-  numeric vector and stored in a persistent ChromaDB collection. On each new
-  reading, a similarity search finds the closest historical match (any city,
+  numeric vector and kept in a bounded in-memory store. On each new reading, a
+  brute-force similarity search finds the closest historical match (any city,
   any time) — surfacing insights like "current conditions in São Paulo are
-  similar to what Cairo experienced earlier."
+  similar to what Cairo experienced earlier." (Originally built on ChromaDB;
+  swapped for a plain Python implementation after its Rust bindings pushed
+  memory past what a free-tier container had available — see "Honest notes".)
 - **`backend/main.py`** — FastAPI app: a background task polls every city
   every 60 seconds, runs both detectors, and broadcasts the combined result
   to every connected WebSocket client.
@@ -79,17 +81,14 @@ On a normal host (including Railway) the real API call works as-is.
    API key.
 4. Railway assigns a public URL and a `PORT` env var automatically; the
    Dockerfile's `CMD` already binds to `$PORT`.
-5. ChromaDB persists to a local `chroma_data/` directory inside the
-   container. On Railway's default (non-persistent-volume) plan this resets
-   on redeploy — fine for a demo; attach a Railway volume mounted at
-   `/app/chroma_data` if you want history to survive restarts.
+5. Pattern history lives in memory (bounded to the last 2,000 readings) and
+   resets on every restart — fine for a demo; swap `vector_store.py` for a
+   persisted backend (Postgres + pgvector, Qdrant, etc.) if you want history
+   to survive restarts in a real deployment.
 
 ## Honest notes
 
 - Poll interval is 60 seconds — weather doesn't change second-to-second, so
   faster polling would just be noise (and unkind to a free public API).
 - The 2.5 standard-deviation threshold is a reasonable default, not a tuned
-  hyperparameter — there's no labeled anomaly dataset for real-world
-  weather to tune against here.
-- No authentication, rate limiting, or multi-tenant support — this is a
-  single shared public dashboard, not a production SaaS.
+  hyperparameter — there's no labeled anomaly
