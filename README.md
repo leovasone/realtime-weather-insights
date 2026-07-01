@@ -91,4 +91,15 @@ On a normal host (including Railway) the real API call works as-is.
 - Poll interval is 60 seconds — weather doesn't change second-to-second, so
   faster polling would just be noise (and unkind to a free public API).
 - The 2.5 standard-deviation threshold is a reasonable default, not a tuned
-  hyperparameter — there's no labeled anomaly
+  hyperparameter — there's no labeled anomaly dataset for real-world
+  weather to tune against here.
+- No authentication, rate limiting, or multi-tenant support — this is a
+  single shared public dashboard, not a production SaaS.
+- First deploy used ChromaDB for the vector store. In production on Railway
+  it caused the container to get killed and restarted roughly every 60-70
+  seconds (no traceback, consistent with an OOM kill), which repeatedly
+  dropped every open WebSocket connection. Swapped it for a small in-memory
+  brute-force search — at this data volume (a handful of 5-float vectors per
+  city) a full vector database was solving a scale problem this app doesn't
+  have. Worth knowing before reaching for a vector DB on a resource-limited
+  host: check whether brute-force search is actually fast enough first.
