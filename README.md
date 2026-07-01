@@ -35,11 +35,12 @@ Open-Meteo API  →  poll loop (60s)  →  anomaly detector (z-score)
   from its own recent rolling baseline.
 - **`backend/vector_store.py`** — every reading is embedded as a 5-dimensional
   numeric vector and kept in a bounded in-memory store. On each new reading, a
-  brute-force similarity search finds the closest historical match (any city,
-  any time) — surfacing insights like "current conditions in São Paulo are
-  similar to what Cairo experienced earlier." (Originally built on ChromaDB;
-  swapped for a plain Python implementation after its Rust bindings pushed
-  memory past what a free-tier container had available — see "Honest notes".)
+  brute-force similarity search finds the closest historical match *in a
+  different city* (any time) — surfacing insights like "current conditions
+  in São Paulo are similar to what Cairo experienced earlier." (Originally
+  built on ChromaDB; swapped for a plain Python implementation after its
+  Rust bindings pushed memory past what a free-tier container had available
+  — see "Honest notes".)
 - **`backend/main.py`** — FastAPI app: a background task polls every city
   every 60 seconds, runs both detectors, and broadcasts the combined result
   to every connected WebSocket client.
@@ -59,7 +60,8 @@ Then open `http://localhost:8000`.
 
 The anomaly detector and vector store are pure logic with no network
 dependency, so they're tested directly with synthetic data (including one
-deliberately injected temperature spike):
+deliberately injected temperature spike, across two synthetic cities so
+cross-city similarity search has something real to find):
 
 ```bash
 python -m backend.test_pipeline
@@ -112,3 +114,13 @@ On a normal host (including Railway) the real API call works as-is.
   and if both fail it swaps in a visible "chart unavailable" message instead
   of empty space — none of this blocks the WebSocket connection or the city
   cards, which never depended on Chart.js in the first place.
+- The similarity search's nearest-neighbor exclusion only filtered out the
+  exact reading just added, not the rest of that city's own history. Since
+  weather barely changes between 60-second polls, each city's own previous
+  reading was almost always its nearest vector neighbor — every "similar
+  pattern" insight was really just "this city is similar to itself a minute
+  ago" (distance ≈ 0), which is true but tells you nothing. Fixed by
+  excluding the whole querying city, not just one reading, so only genuine
+  cross-city matches are ever surfaced. A single-city test wouldn't have
+  caught this, which is why `test_pipeline.py` now uses two synthetic
+  cities and explicitly asserts a city never appears in its own results.
