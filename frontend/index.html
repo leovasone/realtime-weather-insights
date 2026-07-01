@@ -193,4 +193,29 @@ function handleReading(msg){
     addInsight(`<span class="tag">ANOMALIA · ${r.city}</span>${a.metric} = ${a.value} (z=${a.z_score}, média recente ${a.baseline_mean})`, 'anomaly');
   });
   (msg.similar_patterns || []).slice(0,1).forEach(s => {
-    addInsight(`<span class="tag">PADRÃO SIMILAR · ${r.city}</span>parecido com ${s.city} (dist=${s.distance})`, '
+    addInsight(`<span class="tag">PADRÃO SIMILAR · ${r.city}</span>parecido com ${s.city} (dist=${s.distance})`, 'similar');
+  });
+}
+
+function handleNarrative(msg){
+  const box = document.getElementById('narratorBox');
+  if(!box || !msg.text) return;
+  box.style.display = 'block';
+  box.innerHTML = `<span class="tag">// AI NARRATOR · CLAUDE</span>${msg.text}`;
+}
+
+function connect(){
+  const ws = new WebSocket(WS_URL);
+  ws.onopen = () => { statusDot.classList.add('on'); statusText.textContent = 'ao vivo'; };
+  ws.onclose = () => { statusDot.classList.remove('on'); statusText.textContent = 'reconectando...'; setTimeout(connect, 3000); };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if(msg.type === 'reading') handleReading(msg);
+    if(msg.type === 'narrative') handleNarrative(msg);
+  };
+}
+connect();
+</script>
+</body>
+</html>

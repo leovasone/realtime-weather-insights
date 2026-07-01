@@ -21,7 +21,7 @@ import os
 
 log = logging.getLogger("weather-insights.narrator")
 
-_MODEL = "claude-3-5-haiku-20241022"
+_MODEL = "claude-haiku-4-5-20251001"
 _MAX_TOKENS = 100
 
 _client = None
