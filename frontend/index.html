@@ -37,6 +37,8 @@
   .insight.similar .tag{ color:var(--accent-2); }
   .empty{ color:var(--text-dim); font-size:0.85rem; }
   .chart-fallback{ display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-dim); font-size:0.85rem; text-align:center; padding:0 20px; }
+  .narrator-box{ display:none; background:linear-gradient(135deg, rgba(0,229,199,0.08), rgba(91,140,255,0.08)); border:1px solid var(--accent); border-radius:10px; padding:12px 14px; margin-bottom:16px; font-size:0.85rem; line-height:1.5; }
+  .narrator-box .tag{ font-family:var(--mono); font-size:0.66rem; letter-spacing:0.05em; color:var(--accent); display:block; margin-bottom:4px; }
   footer{ margin-top:20px; font-size:0.75rem; color:var(--text-dim); font-family:var(--mono); }
 </style>
 </head>
@@ -53,11 +55,12 @@
   <div class="chart-wrap" id="chartWrap"><canvas id="tempChart"></canvas></div>
   <div class="insights-panel">
     <h2>// AI Insights</h2>
+    <div id="narratorBox" class="narrator-box"></div>
     <div id="insightsFeed"><p class="empty">Aguardando primeira leitura...</p></div>
   </div>
 </div>
 
-<footer>Fonte: Open-Meteo (dados públicos, tempo real) · Anomalias: z-score sobre janela móvel · Padrões similares: busca vetorial em memória</footer>
+<footer>Fonte: Open-Meteo (dados públicos, tempo real) · Anomalias: z-score sobre janela móvel · Padrões similares: busca vetorial em memória · Narração: Claude (Haiku), quando configurada</footer>
 
 <script>
 const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
@@ -190,21 +193,4 @@ function handleReading(msg){
     addInsight(`<span class="tag">ANOMALIA · ${r.city}</span>${a.metric} = ${a.value} (z=${a.z_score}, média recente ${a.baseline_mean})`, 'anomaly');
   });
   (msg.similar_patterns || []).slice(0,1).forEach(s => {
-    addInsight(`<span class="tag">PADRÃO SIMILAR · ${r.city}</span>parecido com ${s.city} (dist=${s.distance})`, 'similar');
-  });
-}
-
-function connect(){
-  const ws = new WebSocket(WS_URL);
-  ws.onopen = () => { statusDot.classList.add('on'); statusText.textContent = 'ao vivo'; };
-  ws.onclose = () => { statusDot.classList.remove('on'); statusText.textContent = 'reconectando...'; setTimeout(connect, 3000); };
-  ws.onerror = () => ws.close();
-  ws.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
-    if(msg.type === 'reading') handleReading(msg);
-  };
-}
-connect();
-</script>
-</body>
-</html>
+    addInsight(`<span class="tag">PADRÃO SIMILAR · ${r.city}</span>parecido com ${s.city} (dist=${s.distance})`, '

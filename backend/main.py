@@ -13,6 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import narrator
 from .anomaly import AnomalyDetector
 from .cities import CITIES
 from .vector_store import WeatherVectorStore
@@ -68,7 +69,11 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "clients": len(manager.active)}
+    return {
+        "status": "ok",
+        "clients": len(manager.active),
+        "narrator_enabled": narrator.is_enabled(),
+    }
 
 
 @app.websocket("/ws")
@@ -84,9 +89,13 @@ async def ws_endpoint(websocket: WebSocket):
 
 
 async def poll_once():
-    """Poll every city once, run detection + similarity search, and
-    broadcast the results. Split out from poll_loop so it's easy to call
-    directly from tests."""
+    """Poll every city once, run detection + similarity search, broadcast
+    each reading, then (at most once for the whole cycle) ask the narrator
+    for a one-sentence summary if anything noteworthy happened. Split out
+    from poll_loop so it's easy to call directly from tests."""
+    cycle_anomalies: list[dict] = []
+    cycle_similar: list[dict] = []
+
     for city in CITIES:
         try:
             reading = await weather_client.fetch(
@@ -107,6 +116,20 @@ async def poll_once():
             "anomalies": anomalies,
             "similar_patterns": similar,
         })
+
+        for a in anomalies:
+            cycle_anomalies.append({**a, "city": city["name"]})
+        for s in similar[:1]:
+            cycle_similar.append({
+                "city": city["name"],
+                "matches": s["city"],
+                "distance": s["distance"],
+            })
+
+    if narrator.is_enabled():
+        text = await narrator.narrate(cycle_anomalies, cycle_similar)
+        if text:
+            await manager.broadcast({"type": "narrative", "text": text})
 
 
 async def poll_loop():

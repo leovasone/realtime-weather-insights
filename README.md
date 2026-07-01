@@ -20,6 +20,7 @@ and similarity search are built for.
 ```
 Open-Meteo API  →  poll loop (60s)  →  anomaly detector (z-score)
                                      →  vector store (in-memory)  →  similarity search
+                                     →  narrator (Claude, optional)
                                      ↓
                               WebSocket broadcast  →  browser dashboard (live charts + insights feed)
 ```
@@ -41,11 +42,20 @@ Open-Meteo API  →  poll loop (60s)  →  anomaly detector (z-score)
   built on ChromaDB; swapped for a plain Python implementation after its
   Rust bindings pushed memory past what a free-tier container had available
   — see "Honest notes".)
+- **`backend/narrator.py`** — the one part of this pipeline that's actually
+  a language model, as opposed to statistics/linear algebra dressed up as
+  "AI". Once per poll cycle (not per city), if anything noteworthy happened,
+  it sends the structured anomalies + similarity matches to Claude (Haiku)
+  and asks for a single plain-Portuguese sentence highlighting what matters.
+  Entirely optional: with no `ANTHROPIC_API_KEY` set, it's a no-op and the
+  rest of the dashboard is unaffected — same "degrade, don't break" pattern
+  as the Chart.js loader.
 - **`backend/main.py`** — FastAPI app: a background task polls every city
-  every 60 seconds, runs both detectors, and broadcasts the combined result
-  to every connected WebSocket client.
+  every 60 seconds, runs both detectors, broadcasts each reading, and — at
+  most once per cycle — asks the narrator for a summary sentence.
 - **`frontend/index.html`** — single-page dashboard: live per-city cards,
-  a temperature chart (Chart.js), and a live-updating AI insights feed.
+  a temperature chart (Chart.js), a highlighted "AI Narrator" line when
+  enabled, and a live-updating raw insights feed.
 
 ## Running locally
 
@@ -79,8 +89,11 @@ On a normal host (including Railway) the real API call works as-is.
 1. Push this repo to GitHub.
 2. In Railway, **New Project → Deploy from GitHub repo** and select it.
    Railway auto-detects the `Dockerfile` and builds from it.
-3. No environment variables or secrets are required — Open-Meteo needs no
-   API key.
+3. Open-Meteo itself needs no API key. The AI narrator is optional: to
+   enable it, add an `ANTHROPIC_API_KEY` environment variable in Railway's
+   service Variables tab (get a key at
+   [console.anthropic.com](https://console.anthropic.com)). Without it, the
+   dashboard runs exactly the same, just without the narrator line.
 4. Railway assigns a public URL and a `PORT` env var automatically; the
    Dockerfile's `CMD` already binds to `$PORT`.
 5. Pattern history lives in memory (bounded to the last 2,000 readings) and
@@ -111,16 +124,4 @@ On a normal host (including Railway) the real API call works as-is.
   case-sensitivity typo in the URL), leaving the chart panel blank with no
   visible explanation. Rewrote loading to be dynamic and decoupled from the
   rest of the page: it tries cdnjs, falls back to jsdelivr if that fails,
-  and if both fail it swaps in a visible "chart unavailable" message instead
-  of empty space — none of this blocks the WebSocket connection or the city
-  cards, which never depended on Chart.js in the first place.
-- The similarity search's nearest-neighbor exclusion only filtered out the
-  exact reading just added, not the rest of that city's own history. Since
-  weather barely changes between 60-second polls, each city's own previous
-  reading was almost always its nearest vector neighbor — every "similar
-  pattern" insight was really just "this city is similar to itself a minute
-  ago" (distance ≈ 0), which is true but tells you nothing. Fixed by
-  excluding the whole querying city, not just one reading, so only genuine
-  cross-city matches are ever surfaced. A single-city test wouldn't have
-  caught this, which is why `test_pipeline.py` now uses two synthetic
-  cities and explicitly asserts a city never appears in its own results.
+  an
