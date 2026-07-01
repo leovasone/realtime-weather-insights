@@ -2,7 +2,7 @@
 
 Each incoming reading is embedded as a 5-dimensional numeric vector (temp,
 humidity, wind, pressure, cloud cover). On every new reading we brute-force
-search for the nearest historical neighbors -- across all cities -- to
+search for the nearest historical neighbors -- across OTHER cities -- to
 surface "this looks like what city X was experiencing on date Y" as an
 AI-generated insight.
 
@@ -63,11 +63,18 @@ class WeatherVectorStore:
         return doc_id
 
     def nearest_similar(self, reading: WeatherReading, exclude_id: str, k: int = 3):
+        # Excluding just `exclude_id` (the reading we just added) is not
+        # enough: weather barely changes between 60s polls, so a city's own
+        # previous reading is almost always its own nearest neighbor --
+        # every insight ends up being "Cairo is similar to Cairo (dist=0)",
+        # which is true but tells you nothing. The interesting signal is
+        # cross-city similarity, so we exclude the querying city's entire
+        # history, not just the one exact reading.
         query = _vector(reading)
         candidates = [
             (dist, meta)
             for doc_id, vec, meta in self._entries
-            if doc_id != exclude_id
+            if doc_id != exclude_id and meta["city"] != reading.city
             for dist in [_l2_distance(query, vec)]
         ]
         if not candidates:

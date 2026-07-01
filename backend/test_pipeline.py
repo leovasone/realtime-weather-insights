@@ -6,6 +6,12 @@ including sandboxes without outbound access to api.open-meteo.com. It proves
 the detection + similarity-search logic is correct independent of the live
 API call, which is a thin, separately-testable adapter (see weather_client.py).
 
+Uses two cities on purpose: the similarity search is only useful if it finds
+matches *across* cities (see the "same-city dist=0" bug documented in
+vector_store.py and the README) -- a single-city test would pass even if that
+exclusion were broken, since it wouldn't have a second city to wrongly match
+against in the first place.
+
 Run: python -m backend.test_pipeline
 """
 from __future__ import annotations
@@ -19,11 +25,10 @@ from .vector_store import WeatherVectorStore
 from .weather_client import WeatherReading
 
 
-def synthetic_readings(city: str, n: int = 25, spike_at: int = 20):
-    base_temp = 22.0
+def synthetic_readings(city: str, n: int = 25, spike_at: int | None = None, base_temp: float = 22.0):
     for i in range(n):
         temp = base_temp + random.uniform(-1.5, 1.5)
-        if i == spike_at:
+        if spike_at is not None and i == spike_at:
             temp += 12  # inject an obvious anomaly
         yield WeatherReading(
             city=city, latitude=0, longitude=0,
@@ -44,21 +49,39 @@ def main():
     store = WeatherVectorStore(persist_dir=persist_dir)
 
     found_anomaly = False
-    found_similar = False
-    for r in synthetic_readings("TestCity"):
+    found_cross_city_similar = False
+    found_same_city_leak = False
+
+    # CityA gets the anomaly spike. CityB is generated around the same
+    # baseline (22C) so it should be the nearest cross-city neighbor for
+    # CityA's non-spike readings.
+    for r in synthetic_readings("CityA", spike_at=20):
         rd = asdict(r)
-        anomalies = detector.evaluate("TestCity", rd)
+        anomalies = detector.evaluate("CityA", rd)
         doc_id = store.add(r)
         similar = store.nearest_similar(r, exclude_id=doc_id)
         if anomalies:
             found_anomaly = True
             print(f"[ANOMALY]  {r.timestamp}  temp={r.temperature_c}  ->  {anomalies}")
-        if similar:
-            found_similar = True
+        if any(s["city"] == "CityA" for s in similar):
+            found_same_city_leak = True
+        if any(s["city"] == "CityB" for s in similar):
+            found_cross_city_similar = True
+
+    for r in synthetic_readings("CityB", base_temp=22.0):
+        rd = asdict(r)
+        detector.evaluate("CityB", rd)
+        doc_id = store.add(r)
+        similar = store.nearest_similar(r, exclude_id=doc_id)
+        if any(s["city"] == "CityA" for s in similar):
+            found_cross_city_similar = True
+        if any(s["city"] == "CityB" for s in similar):
+            found_same_city_leak = True
 
     assert found_anomaly, "expected the injected temperature spike to be flagged"
-    assert found_similar, "expected at least one nearest-neighbor match once history built up"
-    print("\nOK: anomaly detection + vector similarity search both working correctly.")
+    assert found_cross_city_similar, "expected at least one genuine cross-city nearest-neighbor match"
+    assert not found_same_city_leak, "a city's own readings must never appear in its own similar_patterns"
+    print("\nOK: anomaly detection works, and similarity search only ever surfaces other cities.")
 
 
 if __name__ == "__main__":
