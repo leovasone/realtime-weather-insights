@@ -103,3 +103,12 @@ On a normal host (including Railway) the real API call works as-is.
   city) a full vector database was solving a scale problem this app doesn't
   have. Worth knowing before reaching for a vector DB on a resource-limited
   host: check whether brute-force search is actually fast enough first.
+- Chart.js was originally loaded via a single blocking `<script>` tag
+  pointing at cdnjs. In at least one real browser session it never loaded
+  (`ReferenceError: Chart is not defined`, even after fixing an earlier
+  case-sensitivity typo in the URL), leaving the chart panel blank with no
+  visible explanation. Rewrote loading to be dynamic and decoupled from the
+  rest of the page: it tries cdnjs, falls back to jsdelivr if that fails,
+  and if both fail it swaps in a visible "chart unavailable" message instead
+  of empty space — none of this blocks the WebSocket connection or the city
+  cards, which never depended on Chart.js in the first place.

@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Realtime Weather Insights — Leonardo Vasone</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/chart.js/4.4.4/chart.umd.min.js"></script>
 <style>
   :root{
     --bg:#0a0e14; --bg-alt:#0d1320; --panel:#111826; --panel-border:#1f2b3d;
@@ -37,6 +36,7 @@
   .insight.anomaly .tag{ color:var(--danger); }
   .insight.similar .tag{ color:var(--accent-2); }
   .empty{ color:var(--text-dim); font-size:0.85rem; }
+  .chart-fallback{ display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-dim); font-size:0.85rem; text-align:center; padding:0 20px; }
   footer{ margin-top:20px; font-size:0.75rem; color:var(--text-dim); font-family:var(--mono); }
 </style>
 </head>
@@ -50,7 +50,7 @@
 <div class="cities-grid" id="citiesGrid"></div>
 
 <div class="layout">
-  <div class="chart-wrap"><canvas id="tempChart"></canvas></div>
+  <div class="chart-wrap" id="chartWrap"><canvas id="tempChart"></canvas></div>
   <div class="insights-panel">
     <h2>// AI Insights</h2>
     <div id="insightsFeed"><p class="empty">Aguardando primeira leitura...</p></div>
@@ -76,29 +76,64 @@ function getColor(city){
   return colorForCity[city];
 }
 
-// Chart is loaded from a CDN; if that ever fails (network hiccup, CDN
-// outage) the dashboard should degrade to city cards + insights feed
-// instead of a blank page with a WebSocket that never even attempts to
-// connect -- so chart setup is isolated and never allowed to block connect().
+// Chart.js is loaded dynamically (not via a blocking <script> tag) so a
+// single CDN outage/block can never delay or break the rest of the page.
+// connect() below runs immediately and does not wait on any of this --
+// cards + insights always work even if every chart source fails.
 let chart = null;
-try {
-  const ctx = document.getElementById('tempChart').getContext('2d');
-  chart = new Chart(ctx, {
-    type: 'line',
-    data: { datasets: [] },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      animation: false,
-      scales: {
-        x: { type: 'category', ticks: { color: '#8a96a8', maxTicksLimit: 8 }, grid: { color: '#1f2b3d' } },
-        y: { ticks: { color: '#8a96a8' }, grid: { color: '#1f2b3d' }, title: { display: true, text: '°C', color: '#8a96a8' } }
-      },
-      plugins: { legend: { labels: { color: '#e8edf5', font: { size: 10 } } } }
-    }
+
+function loadScriptOnce(src){
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('failed to load ' + src));
+    document.head.appendChild(s);
   });
-} catch (err) {
-  console.warn('Chart.js unavailable, dashboard will run without the temperature chart:', err);
 }
+
+async function initChart(){
+  const sources = [
+    'https://cdnjs.cloudflare.com/ajax/libs/chart.js/4.4.4/chart.umd.min.js',
+    'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js'
+  ];
+  let loaded = false;
+  for (const src of sources){
+    try {
+      await loadScriptOnce(src);
+      if (typeof Chart !== 'undefined'){ loaded = true; break; }
+    } catch (err) {
+      console.warn('Chart.js source failed, trying next:', src, err);
+    }
+  }
+
+  if (!loaded){
+    console.warn('Chart.js unavailable from all sources; dashboard will run without the temperature chart.');
+    const wrap = document.getElementById('chartWrap');
+    if (wrap) wrap.innerHTML = '<div class="chart-fallback">Gráfico de temperatura indisponível no momento (falha ao carregar a biblioteca de gráficos). Os cards e os insights continuam funcionando normalmente.</div>';
+    return;
+  }
+
+  try {
+    const ctx = document.getElementById('tempChart').getContext('2d');
+    chart = new Chart(ctx, {
+      type: 'line',
+      data: { datasets: [] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        animation: false,
+        scales: {
+          x: { type: 'category', ticks: { color: '#8a96a8', maxTicksLimit: 8 }, grid: { color: '#1f2b3d' } },
+          y: { ticks: { color: '#8a96a8' }, grid: { color: '#1f2b3d' }, title: { display: true, text: '°C', color: '#8a96a8' } }
+        },
+        plugins: { legend: { labels: { color: '#e8edf5', font: { size: 10 } } } }
+      }
+    });
+  } catch (err) {
+    console.warn('Chart.js loaded but failed to initialize:', err);
+  }
+}
+initChart();
 
 function ensureCityCard(city){
   if(cityCards[city]) return cityCards[city];
