@@ -25,14 +25,39 @@ from collections import deque
 from .weather_client import WeatherReading
 
 
+# Fixed, realistic min/max bounds per metric, used only to scale each
+# dimension into a comparable 0-1 range before computing distance. Without
+# this, raw values sit on wildly different scales -- pressure varies across
+# ~80 hPa around 1013, while temperature varies across ~65 degrees, humidity
+# and cloud cover across 100 points each. Unscaled, a middling humidity gap
+# can outweigh a real temperature gap in the total distance, which produces
+# "nearest neighbor" matches that don't actually look similar to a human
+# reading the dashboard (see README "Honest notes" for a concrete example).
+# These are broad meteorological bounds, not tuned to this dataset -- the
+# goal is comparable scale across dimensions, not precision.
+_FEATURE_RANGES = {
+    "temperature_c": (-20.0, 45.0),
+    "humidity_pct": (0.0, 100.0),
+    "wind_speed_kmh": (0.0, 100.0),
+    "pressure_hpa": (970.0, 1050.0),
+    "cloud_cover_pct": (0.0, 100.0),
+}
+
+
 def _vector(r: WeatherReading) -> list[float]:
-    return [
-        r.temperature_c,
-        r.humidity_pct,
-        r.wind_speed_kmh,
-        r.pressure_hpa,
-        r.cloud_cover_pct,
+    raw = [
+        ("temperature_c", r.temperature_c),
+        ("humidity_pct", r.humidity_pct),
+        ("wind_speed_kmh", r.wind_speed_kmh),
+        ("pressure_hpa", r.pressure_hpa),
+        ("cloud_cover_pct", r.cloud_cover_pct),
     ]
+    normalized = []
+    for name, value in raw:
+        lo, hi = _FEATURE_RANGES[name]
+        scaled = (value - lo) / (hi - lo)
+        normalized.append(max(0.0, min(1.0, scaled)))
+    return normalized
 
 
 def _l2_distance(a: list[float], b: list[float]) -> float:

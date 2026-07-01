@@ -124,4 +124,38 @@ On a normal host (including Railway) the real API call works as-is.
   case-sensitivity typo in the URL), leaving the chart panel blank with no
   visible explanation. Rewrote loading to be dynamic and decoupled from the
   rest of the page: it tries cdnjs, falls back to jsdelivr if that fails,
-  an
+  and if both fail it swaps in a visible "chart unavailable" message instead
+  of empty space — none of this blocks the WebSocket connection or the city
+  cards, which never depended on Chart.js in the first place.
+- The similarity search's nearest-neighbor exclusion only filtered out the
+  exact reading just added, not the rest of that city's own history. Since
+  weather barely changes between 60-second polls, each city's own previous
+  reading was almost always its nearest vector neighbor — every "similar
+  pattern" insight was really just "this city is similar to itself a minute
+  ago" (distance ≈ 0), which is true but tells you nothing. Fixed by
+  excluding the whole querying city, not just one reading, so only genuine
+  cross-city matches are ever surfaced. A single-city test wouldn't have
+  caught this, which is why `test_pipeline.py` now uses two synthetic
+  cities and explicitly asserts a city never appears in its own results.
+- Being upfront about naming: z-score anomaly detection and vector-distance
+  similarity search are legitimate techniques, but they're statistics and
+  linear algebra, not machine learning models. The narrator (Claude) is the
+  only genuinely generative-AI piece of this pipeline. It's called at most
+  once per 60-second poll cycle across all six cities combined — not once
+  per city — both to keep cost negligible and because "something changed
+  somewhere this minute" is a more useful unit of narration than six
+  separate one-line summaries every cycle.
+- The vector embedding originally used raw values (temperature in °C,
+  pressure in hPa, humidity/cloud cover in %) with no scaling, so distance
+  mixed dimensions on incompatible scales — a moderate humidity gap could
+  outweigh a real temperature gap in the total. Caught this after the
+  narrator described a São Paulo/New York match as "praticamente idênticas"
+  when the underlying readings were ~25°C vs ~33°C and 9 points apart on
+  humidity: the distance really was the smallest among that cycle's pairs,
+  but "smallest" isn't the same as "similar" when the units aren't
+  comparable. Fixed by min-max scaling each dimension into 0-1 using fixed
+  meteorological bounds before computing L2 distance, and tightened the
+  narrator's prompt to only claim two cities are "quase idênticas" below a
+  strict distance threshold, describing merely-closest pairs more precisely
+  otherwise (naming the actual gap when it's the reason two cities aren't a
+  real match despite being the closest pair that cycle).

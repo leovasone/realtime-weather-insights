@@ -58,7 +58,18 @@ def _build_prompt(anomalies: list[dict], similar: list[dict]) -> str:
         "write ONE short sentence (max ~30 words) in Brazilian Portuguese "
         "pointing out the single most interesting thing happening right now. "
         "Be specific and concrete, no filler, no bullet points, no preamble -- "
-        "just the one sentence.\n\n" + "\n".join(lines)
+        "just the one sentence.\n\n"
+        "Ground the sentence only in the numbers given below -- do not imply "
+        "a historical record or 'all-time' comparison, since you were only "
+        "given this one cycle. For similarity matches, the distance is a "
+        "normalized score, not a guarantee the conditions feel the same to a "
+        "person: only call two cities 'quase idênticas' or similar if the "
+        "distance is very low (below 0.05); for a small-but-real distance, "
+        "say they are 'parecidas' or 'as mais próximas neste momento' "
+        "instead, and it's fine to name a concrete gap (e.g. a temperature "
+        "or humidity difference) if it's the reason two cities aren't a "
+        "perfect match despite being the closest pair this cycle.\n\n"
+        + "\n".join(lines)
     )
 
 
