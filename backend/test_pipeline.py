@@ -21,7 +21,7 @@ import shutil
 from dataclasses import asdict
 
 from .anomaly import AnomalyDetector
-from .vector_store import WeatherVectorStore
+from .vector_store import WeatherVectorStore, closeness_label, notable_gaps
 from .weather_client import WeatherReading
 
 
@@ -41,7 +41,38 @@ def synthetic_readings(city: str, n: int = 25, spike_at: int | None = None, base
         )
 
 
+def test_closeness_and_gaps():
+    """closeness_label/notable_gaps are the fix for the narrator overclaiming
+    similarity (see README "Honest notes"): it once called a distance-0.24
+    match "quase idênticas" despite an in-prompt instruction not to. These
+    are now computed in code so the LLM can't misjudge the threshold, so
+    it's worth pinning their behavior directly rather than only indirectly
+    through the narrator (which needs a live API key to test end-to-end)."""
+    assert closeness_label(0.0) == "praticamente idênticas"
+    assert closeness_label(0.24) != "praticamente idênticas"
+    assert "diferenças reais" in closeness_label(0.24)
+    assert "sem grande semelhança" in closeness_label(1.0)
+
+    # Same real-world pair that prompted this fix: Tokyo's calm 3.7 km/h
+    # wind vs Sydney's 22 km/h -- a big real gap that a low aggregate
+    # distance was hiding.
+    tokyo = WeatherReading(
+        city="Tokyo", latitude=0, longitude=0,
+        temperature_c=21.6, humidity_pct=94.0, wind_speed_kmh=3.7,
+        pressure_hpa=1009.8, cloud_cover_pct=84.0, timestamp="2026-07-01T12:00",
+    )
+    sydney_match = {
+        "city": "Sydney", "temperature_c": 15.9, "humidity_pct": 81.0,
+        "wind_speed_kmh": 22.0, "pressure_hpa": 1010.4, "cloud_cover_pct": 95.0,
+    }
+    gaps = notable_gaps(tokyo, sydney_match)
+    assert any("vento" in g for g in gaps), f"expected a wind gap to be flagged, got: {gaps}"
+    print(f"[CLOSENESS]  Tokyo/Sydney example -> notable_gaps: {gaps}")
+    print("OK: closeness_label and notable_gaps behave as expected.\n")
+
+
 def main():
+    test_closeness_and_gaps()
     persist_dir = "chroma_data_test"
     shutil.rmtree(persist_dir, ignore_errors=True)  # fresh run every time
 

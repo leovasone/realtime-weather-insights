@@ -159,3 +159,16 @@ On a normal host (including Railway) the real API call works as-is.
   strict distance threshold, describing merely-closest pairs more precisely
   otherwise (naming the actual gap when it's the reason two cities aren't a
   real match despite being the closest pair that cycle).
+- That prompt-level threshold instruction didn't hold up: shortly after,
+  Haiku called a Tokyo/Sydney match (distance 0.24) "quase idênticas"
+  anyway, ignoring the "only below 0.05" rule written into the prompt. A
+  small, cheap model doesn't reliably apply a numeric threshold buried in
+  prose. The underlying numbers made it worse than it sounds -- Tokyo's
+  wind was 3.7 km/h against Sydney's 22 km/h, an 18.3 km/h gap that barely
+  moved the aggregate distance because it's one of five equally-weighted
+  normalized dimensions. Fixed by moving the judgment call out of the
+  prompt entirely: `closeness_label()` and `notable_gaps()` in
+  `vector_store.py` compute a fixed qualitative phrase and any large
+  single-metric gaps in code, and the narrator is now instructed to use
+  that exact phrase verbatim and name a concrete gap when one is flagged,
+  rather than deciding the wording itself.

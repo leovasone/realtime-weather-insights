@@ -48,9 +48,13 @@ def _build_prompt(anomalies: list[dict], similar: list[dict]) -> str:
             f"(z-score {a['z_score']}, recent baseline {a['baseline_mean']})"
         )
     for s in similar:
+        gaps = s.get("notable_gaps") or []
+        gaps_note = f" Notable real gaps despite this: {'; '.join(gaps)}." if gaps else ""
         lines.append(
             f"- {s['city']} currently resembles {s['matches']} "
-            f"(vector distance {s['distance']})"
+            f"(vector distance {s['distance']}). Pre-computed closeness "
+            f"(use this exact phrase, do not invent your own wording): "
+            f"\"{s['closeness_label']}\".{gaps_note}"
         )
     return (
         "You are annotating a live weather-monitoring dashboard for a portfolio "
@@ -61,14 +65,14 @@ def _build_prompt(anomalies: list[dict], similar: list[dict]) -> str:
         "just the one sentence.\n\n"
         "Ground the sentence only in the numbers given below -- do not imply "
         "a historical record or 'all-time' comparison, since you were only "
-        "given this one cycle. For similarity matches, the distance is a "
-        "normalized score, not a guarantee the conditions feel the same to a "
-        "person: only call two cities 'quase idênticas' or similar if the "
-        "distance is very low (below 0.05); for a small-but-real distance, "
-        "say they are 'parecidas' or 'as mais próximas neste momento' "
-        "instead, and it's fine to name a concrete gap (e.g. a temperature "
-        "or humidity difference) if it's the reason two cities aren't a "
-        "perfect match despite being the closest pair this cycle.\n\n"
+        "given this one cycle. For any similarity match, you MUST describe "
+        "how close the two cities are using the exact pre-computed closeness "
+        "phrase given in quotes -- do not substitute your own judgment (e.g. "
+        "do not say 'quase idênticas' unless that literal phrase was given "
+        "to you). If a match lists notable real gaps, name at least one of "
+        "them concretely instead of glossing over it -- a low aggregate "
+        "distance can still hide a large gap in one specific metric like "
+        "wind or temperature.\n\n"
         + "\n".join(lines)
     )
 

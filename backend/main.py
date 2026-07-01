@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from . import narrator
 from .anomaly import AnomalyDetector
 from .cities import CITIES
-from .vector_store import WeatherVectorStore
+from .vector_store import WeatherVectorStore, closeness_label, notable_gaps
 from .weather_client import OpenMeteoClient
 
 logging.basicConfig(level=logging.INFO)
@@ -124,6 +124,8 @@ async def poll_once():
                 "city": city["name"],
                 "matches": s["city"],
                 "distance": s["distance"],
+                "closeness_label": closeness_label(s["distance"]),
+                "notable_gaps": notable_gaps(reading, s),
             })
 
     if narrator.is_enabled():

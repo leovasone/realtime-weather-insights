@@ -64,6 +64,75 @@ def _l2_distance(a: list[float], b: list[float]) -> float:
     return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
 
 
+# Thresholds for a single raw metric to count as a "notable" real-world gap,
+# even when the *overall* normalized distance between two cities is low.
+# Wind speed barely moves the total distance (it's one of five equally
+# weighted dimensions), so a 3.7 km/h vs 22 km/h pair can still end up as
+# the closest match in a cycle -- these thresholds exist to surface that
+# kind of gap explicitly instead of letting an aggregate score hide it.
+_NOTABLE_GAP_THRESHOLDS = {
+    "temperature_c": 5.0,
+    "humidity_pct": 20.0,
+    "wind_speed_kmh": 10.0,
+    "pressure_hpa": 8.0,
+    "cloud_cover_pct": 30.0,
+}
+
+_METRIC_LABELS_PT = {
+    "temperature_c": "temperatura",
+    "humidity_pct": "umidade",
+    "wind_speed_kmh": "vento",
+    "pressure_hpa": "pressão",
+    "cloud_cover_pct": "nuvens",
+}
+
+_METRIC_UNITS = {
+    "temperature_c": "°C",
+    "humidity_pct": "%",
+    "wind_speed_kmh": "km/h",
+    "pressure_hpa": "hPa",
+    "cloud_cover_pct": "%",
+}
+
+
+def closeness_label(distance: float) -> str:
+    """Turn a normalized distance into a fixed, honest qualitative phrase.
+
+    This is computed in code, not left to the LLM's judgment: a small,
+    cheap model (Haiku) does not reliably apply a numeric threshold buried
+    in prose -- it previously called a distance-0.24 match "quase
+    idênticas" despite an explicit instruction to reserve that phrase for
+    distances below 0.05 (see README "Honest notes"). Handing it a fixed
+    phrase to use verbatim removes that judgment call entirely.
+    """
+    if distance < 0.05:
+        return "praticamente idênticas"
+    if distance < 0.15:
+        return "muito parecidas, com pequenas diferenças"
+    if distance < 0.35:
+        return "as mais parecidas do momento, mas com diferenças reais"
+    return "sem grande semelhança — apenas o par mais próximo disponível neste ciclo"
+
+
+def notable_gaps(reading: WeatherReading, match: dict) -> list[str]:
+    """Return human-readable callouts for any single metric that differs a
+    lot in real terms between `reading` and a `nearest_similar` match, even
+    if the overall normalized distance is small."""
+    raw = {
+        "temperature_c": reading.temperature_c,
+        "humidity_pct": reading.humidity_pct,
+        "wind_speed_kmh": reading.wind_speed_kmh,
+        "pressure_hpa": reading.pressure_hpa,
+        "cloud_cover_pct": reading.cloud_cover_pct,
+    }
+    gaps = []
+    for key, threshold in _NOTABLE_GAP_THRESHOLDS.items():
+        gap = abs(raw[key] - match[key])
+        if gap >= threshold:
+            gaps.append(f"{_METRIC_LABELS_PT[key]}: {gap:.1f}{_METRIC_UNITS[key]} de diferença")
+    return gaps
+
+
 class WeatherVectorStore:
     """Bounded in-memory store; `persist_dir` is accepted for interface
     compatibility but unused -- history resets on process restart, which is
