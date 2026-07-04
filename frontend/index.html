@@ -165,7 +165,11 @@ function addInsight(html, cls){
   insightsFeed.prepend(el);
   const empty = insightsFeed.querySelector('.empty');
   if(empty) empty.remove();
-  while(insightsFeed.children.length > 40) insightsFeed.removeChild(insightsFeed.lastChild);
+  // Keep this list short and bounded on purpose: the panel already has a
+  // fixed max-height with its own scrollbar (see .insights-panel), but a
+  // tight cap here means the feed reads as "the last handful of things
+  // that happened" rather than an ever-growing, effectively infinite log.
+  while(insightsFeed.children.length > 20) insightsFeed.removeChild(insightsFeed.lastChild);
 }
 
 function handleReading(msg){
