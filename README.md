@@ -304,3 +304,14 @@ On a normal host (including Railway) the real API call works as-is.
   sides happened to have an entry — the same kind of selection-bias bug as
   the vector store's original same-city leak, just in a correlation
   instead of a nearest-neighbor search.
+- The retail panel only fetches on its own slow ~4h loop (`retail_once()`),
+  not on every 60-second weather poll, to stay under Alpha Vantage's
+  free-tier cap. That meant a browser tab connecting between two retail
+  cycles never got a "retail" message at all until the next one fired —
+  up to 4h of a generic "waiting for data" placeholder even though the
+  server already had real data. Fixed by caching the last retail broadcast
+  in `main.py` (`_last_retail_message`) and replaying it to each newly
+  connected WebSocket client immediately on connect, and by making the
+  placeholder text itself specific (mentions the ~4h cadence and the
+  15-day correlation minimum) for the rare case a client connects before
+  the very first retail cycle has ever run.

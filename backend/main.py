@@ -87,6 +87,14 @@ correlation_trackers = [CorrelationTracker(a, b) for a, b in TRACKED_PAIRS]
 _alpha_vantage_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
 retail_client = AlphaVantageRetailClient(_alpha_vantage_key) if _alpha_vantage_key else None
 climate_retail_correlation = ClimateRetailCorrelationTracker()
+# retail_once() only runs every RETAIL_POLL_INTERVAL_SECONDS (4h), not every
+# 60s poll cycle. Without this cache, a browser tab that connects between two
+# retail cycles never receives a "retail" message at all until the next one
+# fires -- up to 4h of staring at the frontend's generic "aguardando dados"
+# placeholder even though the server already has real data in hand. Caching
+# the last broadcast and replaying it to each newly-connected socket (see
+# ws_endpoint below) closes that gap.
+_last_retail_message: dict | None = None
 
 
 @app.get("/")
@@ -110,6 +118,15 @@ async def health():
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
+    if _last_retail_message is not None:
+        # Replay the last known retail snapshot immediately so this client
+        # doesn't have to wait for the next 4h retail cycle just to see data
+        # (and its real day-count-so-far correlation note) the server
+        # already has. Sent only to this socket, not broadcast.
+        try:
+            await websocket.send_json(_last_retail_message)
+        except Exception:
+            pass
     try:
         while True:
             # The client doesn't need to send anything; this just keeps the
@@ -246,11 +263,13 @@ async def retail_once():
             quote_dict = asdict(q)
             quote_dict["correlation"] = climate_retail_correlation.correlation_for(q.symbol)
             payload.append(quote_dict)
-        await manager.broadcast({
+        global _last_retail_message
+        _last_retail_message = {
             "type": "retail",
             "quotes": payload,
             "disclaimer": RETAIL_DISCLAIMER,
-        })
+        }
+        await manager.broadcast(_last_retail_message)
 
 
 async def retail_loop():
