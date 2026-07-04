@@ -27,8 +27,14 @@
   .city-card .metrics{ margin-top:8px; font-size:0.78rem; color:var(--text-dim); font-family:var(--mono); display:flex; flex-direction:column; gap:3px; }
   .city-card.flagged{ border-color:var(--danger); }
   .chart-wrap{ background:var(--panel); border:1px solid var(--panel-border); border-radius:var(--radius); padding:18px; height:340px; }
-  .insights-panel{ background:var(--panel); border:1px solid var(--panel-border); border-radius:var(--radius); padding:18px; max-height:700px; overflow-y:auto; }
+  .insights-panel{ background:var(--panel); border:1px solid var(--panel-border); border-radius:var(--radius); padding:18px; }
   .insights-panel h2{ font-size:1rem; margin-bottom:14px; }
+  /* The narrator box above stays fully visible at all times (normal document
+     flow, not scrollable) -- only the list of individual insight cards below
+     it scrolls. #insightsFeed is capped to roughly 5 visible cards; anything
+     older is still there but requires the user to scroll for it, instead of
+     the whole panel (narrator included) scrolling together as one block. */
+  #insightsFeed{ max-height:300px; overflow-y:auto; padding-right:4px; }
   .insight{ border-left:2px solid var(--panel-border); padding:8px 0 8px 12px; margin-bottom:10px; font-size:0.82rem; }
   .insight.anomaly{ border-left-color:var(--danger); }
   .insight.similar{ border-left-color:var(--accent-2); }
@@ -165,10 +171,10 @@ function addInsight(html, cls){
   insightsFeed.prepend(el);
   const empty = insightsFeed.querySelector('.empty');
   if(empty) empty.remove();
-  // Keep this list short and bounded on purpose: the panel already has a
-  // fixed max-height with its own scrollbar (see .insights-panel), but a
-  // tight cap here means the feed reads as "the last handful of things
-  // that happened" rather than an ever-growing, effectively infinite log.
+  // Keep this list short and bounded on purpose: #insightsFeed already has
+  // a fixed max-height with its own scrollbar (see CSS), but a tight cap
+  // here means the feed reads as "the last handful of things that
+  // happened" rather than an ever-growing, effectively infinite log.
   while(insightsFeed.children.length > 20) insightsFeed.removeChild(insightsFeed.lastChild);
 }
 
