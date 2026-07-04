@@ -1,5 +1,10 @@
 # Realtime Weather Insights
 
+🔴 [Live demo](https://realtime-weather-insights-production.up.railway.app) ·
+🔗 [Case study](https://vasone.com.br/realtime-insights.html) on
+[vasone.com.br](https://vasone.com.br) — Leonardo Vasone's AI/ML & Data
+Engineering portfolio.
+
 A working real-time insights dashboard: it ingests live public weather data,
 runs it through an AI pipeline (anomaly detection + vector similarity
 search), and streams the results to the browser over WebSockets as they
