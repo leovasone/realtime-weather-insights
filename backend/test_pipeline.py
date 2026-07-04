@@ -20,8 +20,12 @@ import random
 import shutil
 from dataclasses import asdict
 
+from .air_quality_client import eaqi_band
 from .anomaly import AnomalyDetector
-from .signals import anomaly_to_signal, composite_score, similarity_to_signal
+from .correlation import CorrelationTracker
+from .forecast import ForecastTracker
+from .regime import RegimeTracker, _label_centroid, kmeans
+from .signals import air_quality_to_signal, anomaly_to_signal, composite_score, similarity_to_signal
 from .vector_store import WeatherVectorStore, closeness_label, notable_gaps
 from .weather_client import WeatherReading
 
@@ -104,9 +108,147 @@ def test_signals_and_composite_score():
     print("OK: signal conversion and composite scoring behave as expected.\n")
 
 
+def test_air_quality():
+    """eaqi_band's thresholds are a fixed lookup, not a computed formula --
+    worth pinning directly. air_quality_to_signal should stay quiet (0
+    severity) right at the "moderada" boundary and saturate at 1.0 once AQI
+    is deep into "muito ruim", mirroring how anomaly_to_signal saturates."""
+    assert eaqi_band(10) == "boa"
+    assert eaqi_band(40) == "razoável"
+    assert eaqi_band(60) == "moderada"
+    assert eaqi_band(100) == "muito ruim"
+    assert eaqi_band(150) == "extremamente ruim"
+
+    calm_sig = air_quality_to_signal("Cairo", european_aqi=40, pm2_5=12.0, band="razoável")
+    bad_sig = air_quality_to_signal("Cairo", european_aqi=100, pm2_5=80.0, band="muito ruim")
+    assert calm_sig.severity == 0.0, "AQI right at the moderada boundary should score 0 severity"
+    assert bad_sig.severity == 1.0, "AQI at the top of the defined band range should saturate at 1.0"
+    assert calm_sig.type == "air_quality"
+    print(f"[AIR QUALITY]  calm_severity={calm_sig.severity}  bad_severity={bad_sig.severity}")
+    print("OK: eaqi_band and air_quality_to_signal behave as expected.\n")
+
+
+def test_correlation_break():
+    """Feed a city a strongly-correlated pressure/temperature series (a
+    straight line) so the tracker establishes a relationship, then inject
+    one reading that breaks it. The break must be strong enough to produce
+    a large residual but not so extreme that it drags the *window's own*
+    correlation below the tracker's _MIN_CORRELATION threshold -- r is
+    recomputed over the whole window including the breaking point, so an
+    overly wild single outlier can crush |r| below 0.5 and make the
+    detector correctly decline to fire (there's no "established
+    relationship" left once the outlier is folded into r itself). An
+    18-point line with a -15 offset on the 19th point keeps r ~0.8 while
+    still producing a residual z-score well past the 2.5 trigger."""
+    tracker = CorrelationTracker("pressure_hpa", "temperature_c", window=20)
+    fired = False
+    for i in range(18):
+        pressure = 1000 + i  # perfectly linear vs. temperature below
+        temp = 20 + i  # pressure_hpa and temperature_c move in lockstep
+        sig = tracker.evaluate("Testville", {"pressure_hpa": pressure, "temperature_c": temp})
+        if sig:
+            fired = True
+    assert not fired, "a perfectly linear, unbroken relationship must never fire a break"
+
+    # Now break it: pressure keeps climbing on trend but temperature falls
+    # well short of what the established line would predict.
+    break_sig = tracker.evaluate("Testville", {"pressure_hpa": 1018, "temperature_c": 23})
+    assert break_sig is not None, "a sharp divergence from the established linear relationship should fire"
+    assert break_sig.type == "correlation_break"
+    assert break_sig.evidence["metric_a"] == "pressure_hpa"
+    assert abs(break_sig.evidence["correlation"]) >= 0.5, "the break itself must not have crushed the window's own correlation below the tracker's threshold"
+    print(f"[CORRELATION]  break_severity={break_sig.severity}  r={break_sig.evidence['correlation']}")
+    print("OK: correlation-break detection stays quiet on a stable relationship and fires on a real break.\n")
+
+
+def test_forecast_miss():
+    """Feed a city a flat, stable metric so the smoothed forecast tracks it
+    closely, then inject a sharp jump. The jump should fire a forecast_miss
+    signal once there's enough residual history to judge it against.
+
+    Uses a small deterministic alternating jitter (+/-0.1) on every metric
+    rather than an exactly-repeating constant: feeding the exact same float
+    dozens of times hits a genuine floating-point edge case in the
+    smoothing formula (`alpha*value + (1-alpha)*level` doesn't reproduce
+    `value` bit-for-bit) that makes the residual history collapse toward a
+    near-zero spread, which can make even a ~1e-13 rounding artifact look
+    like a z-score spike. Real sensor data always has some jitter, so this
+    edge case doesn't come up in production -- but a literal constant in a
+    test does hit it, so the jitter here is what real data would look
+    like, not a workaround for a production bug."""
+    tracker = ForecastTracker()
+    fired = False
+    for i in range(15):
+        jitter = 0.1 if i % 2 == 0 else -0.1
+        signals = tracker.evaluate("Testville", {
+            "temperature_c": 20.0 + jitter, "humidity_pct": 50.0 + jitter,
+            "wind_speed_kmh": 10.0 + jitter, "pressure_hpa": 1013.0 + jitter,
+            "cloud_cover_pct": 40.0 + jitter,
+        })
+        if signals:
+            fired = True
+    assert not fired, "a stable, flat metric must never fire a forecast miss"
+
+    signals = tracker.evaluate("Testville", {
+        "temperature_c": 45.0,  # sharp jump the smoothed level would not predict
+        "humidity_pct": 50.0, "wind_speed_kmh": 10.0,
+        "pressure_hpa": 1013.0, "cloud_cover_pct": 40.0,
+    })
+    assert signals, "a sharp jump away from the smoothed trend should fire a forecast_miss"
+    miss = signals[0]
+    assert miss.type == "forecast_miss"
+    assert miss.evidence["metric"] == "temperature_c"
+    print(f"[FORECAST]  actual={miss.evidence['actual']}  predicted={miss.evidence['predicted']}")
+    print("OK: forecast-miss detection stays quiet on a flat trend and fires on a sharp jump.\n")
+
+
+def test_regime_clustering():
+    """kmeans on two obviously-separated synthetic clusters should recover
+    two distinct centroids close to the true cluster centers. Then
+    RegimeTracker.assign_one should report a regime_change when a city's
+    vector moves from one cluster to the other between calls, and should
+    NOT report anything on a city's very first observation."""
+    cold_cluster = [[0.1, 0.5, 0.2, 0.5, 0.3] for _ in range(10)]
+    hot_cluster = [[0.9, 0.5, 0.2, 0.5, 0.3] for _ in range(10)]
+    centroids = kmeans(cold_cluster + hot_cluster, k=2, seed=1)
+    temps = sorted(c[0] for c in centroids)
+    assert temps[0] < 0.3 and temps[1] > 0.7, f"expected two well-separated centroids, got {centroids}"
+    assert _label_centroid([0.9, 0.5, 0.2, 0.5, 0.3]) != _label_centroid([0.1, 0.5, 0.2, 0.5, 0.3])
+
+    class _FakeStore:
+        """assign_one only needs `all_vectors()`; a minimal stand-in avoids
+        pulling the real WeatherVectorStore (and its WeatherReading
+        objects) into a test about clustering, not embeddings."""
+        def __init__(self, pairs):
+            self._pairs = pairs
+
+        def all_vectors(self):
+            return self._pairs
+
+    pairs = [(v, {}) for v in cold_cluster + hot_cluster]
+    store = _FakeStore(pairs)
+    tracker = RegimeTracker(k=2, refresh_every=100)
+
+    first = tracker.assign_one(store, "Testville", [0.1, 0.5, 0.2, 0.5, 0.3])
+    assert first is None, "a city's first-ever regime observation must not fire a change"
+
+    same = tracker.assign_one(store, "Testville", [0.12, 0.5, 0.2, 0.5, 0.3])
+    assert same is None, "staying in the same regime must not fire a change"
+
+    changed = tracker.assign_one(store, "Testville", [0.9, 0.5, 0.2, 0.5, 0.3])
+    assert changed is not None, "moving to the other cluster must fire a regime_change"
+    assert changed.type == "regime_change"
+    print(f"[REGIME]  {changed.evidence['old_regime']} -> {changed.evidence['new_regime']}")
+    print("OK: k-means separates clusters and RegimeTracker detects real regime changes.\n")
+
+
 def main():
     test_closeness_and_gaps()
     test_signals_and_composite_score()
+    test_air_quality()
+    test_correlation_break()
+    test_forecast_miss()
+    test_regime_clustering()
     persist_dir = "chroma_data_test"
     shutil.rmtree(persist_dir, ignore_errors=True)  # fresh run every time
 

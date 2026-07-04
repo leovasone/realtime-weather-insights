@@ -163,6 +163,18 @@ class WeatherVectorStore:
         self._entries.append((doc_id, _vector(reading), meta))
         return doc_id
 
+    def vector_for(self, reading: WeatherReading) -> list[float]:
+        """Expose the same normalized embedding `add`/`nearest_similar`
+        use internally, so callers (e.g. regime.py's clustering) work with
+        the identical vector space instead of recomputing their own."""
+        return _vector(reading)
+
+    def all_vectors(self) -> list[tuple[list[float], dict]]:
+        """Snapshot of every currently-stored (vector, metadata) pair.
+        Used by regime.py to define climate clusters from the full recent
+        history rather than a single cycle's handful of points."""
+        return [(vec, meta) for _doc_id, vec, meta in self._entries]
+
     def nearest_similar(self, reading: WeatherReading, exclude_id: str, k: int = 3):
         # Excluding just `exclude_id` (the reading we just added) is not
         # enough: weather barely changes between 60s polls, so a city's own

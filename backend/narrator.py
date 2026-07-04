@@ -62,13 +62,37 @@ def _build_prompt(signals: list[Signal]) -> str:
                 f"(use this exact phrase, do not invent your own wording): "
                 f"\"{e['closeness_label']}\".{gaps_note}"
             )
+        elif sig.type == "air_quality":
+            e = sig.evidence
+            lines.append(
+                f"- Air quality in {sig.city}: European AQI {e['european_aqi']} "
+                f"({e['band']}), PM2.5 {e['pm2_5']} µg/m³."
+            )
+        elif sig.type == "correlation_break":
+            e = sig.evidence
+            lines.append(
+                f"- In {sig.city}, the usual relationship between {e['metric_a']} and "
+                f"{e['metric_b']} (historical correlation {e['correlation']}) broke this "
+                f"cycle (residual z-score {e['residual_z']})."
+            )
+        elif sig.type == "forecast_miss":
+            e = sig.evidence
+            lines.append(
+                f"- In {sig.city}, {e['metric']} came in at {e['actual']}, notably "
+                f"different from the ~{e['predicted']} its recent trend predicted "
+                f"(z-score {e['residual_z']})."
+            )
+        elif sig.type == "regime_change":
+            e = sig.evidence
+            lines.append(
+                f"- {sig.city} shifted from a '{e['old_regime']}' climate pattern to "
+                f"'{e['new_regime']}' this cycle."
+            )
         else:
-            # Future signal types (air quality, correlation breaks,
-            # forecast misses, regime changes, climatology, nearby
-            # natural events) fall back to their own plain-language
-            # `summary` until they earn bespoke phrasing here the way
-            # anomaly/similarity have -- new sources work immediately,
-            # tuned prompting for them can follow later.
+            # Any future signal type not yet listed above falls back to
+            # its own plain-language `summary` until it earns bespoke
+            # phrasing the way the others have -- new sources work
+            # immediately, tuned prompting for them can follow later.
             lines.append(f"- {sig.type} signal in {sig.city}: {sig.summary}")
     return (
         "You are annotating a live weather-monitoring dashboard for a portfolio "

@@ -51,6 +51,10 @@ class Signal:
 _SIGNAL_WEIGHTS = {
     "anomaly": 1.0,
     "similarity": 0.4,
+    "air_quality": 0.8,  # a real operational/health concern, weighted close to anomaly
+    "correlation_break": 0.6,  # an interesting pattern, not inherently alarming on its own
+    "forecast_miss": 0.8,  # a real divergence from expected trend, similar weight to anomaly
+    "regime_change": 0.3,  # informational/categorical, the lightest of the v2 signal types
 }
 _DEFAULT_WEIGHT = 0.6
 
@@ -113,4 +117,76 @@ def similarity_to_signal(city: str, match: dict, closeness: str, gaps: list[str]
             "closeness_label": closeness,
             "notable_gaps": gaps,
         },
+    )
+
+
+def air_quality_to_signal(city: str, european_aqi: float, pm2_5: float, band: str) -> Signal:
+    """Air quality reading (see air_quality_client.py) -> unified signal.
+
+    Only meaningful once European AQI crosses into "moderada" (>40) --
+    below that, air quality isn't operationally interesting. Severity
+    saturates at 1.0 by AQI 100 ("muito ruim"), the top of the defined
+    EAQI band range.
+    """
+    severity = round(min(1.0, max(0.0, (european_aqi - 40) / 60)), 2)
+    return Signal(
+        type="air_quality",
+        city=city,
+        severity=severity,
+        summary=f"European AQI {european_aqi} ({band}), PM2.5 {pm2_5} µg/m³",
+        evidence={"european_aqi": european_aqi, "pm2_5": pm2_5, "band": band},
+    )
+
+
+def correlation_break_to_signal(city: str, metric_a: str, metric_b: str, correlation: float, residual_z: float) -> Signal:
+    """Cross-metric correlation break (see correlation.py) -> unified
+    signal. Severity uses the same saturation curve as anomaly_to_signal
+    -- both are residual z-scores past a 2.5 trigger threshold, just of
+    different quantities (a raw value vs. a relationship's residual)."""
+    severity = round(min(1.0, max(0.0, (residual_z - 2.5) / 5.0)), 2)
+    return Signal(
+        type="correlation_break",
+        city=city,
+        severity=severity,
+        summary=f"{metric_a}/{metric_b} relationship broke (usual r={correlation:.2f}, residual z={residual_z:.2f})",
+        evidence={
+            "metric_a": metric_a,
+            "metric_b": metric_b,
+            "correlation": round(correlation, 2),
+            "residual_z": round(residual_z, 2),
+        },
+    )
+
+
+def forecast_miss_to_signal(city: str, metric: str, actual: float, predicted: float, residual_z: float) -> Signal:
+    """Forecast miss (see forecast.py) -> unified signal. Same severity
+    curve as the other residual-based signals (anomaly, correlation
+    break) for consistency across the composite score."""
+    severity = round(min(1.0, max(0.0, (residual_z - 2.5) / 5.0)), 2)
+    return Signal(
+        type="forecast_miss",
+        city=city,
+        severity=severity,
+        summary=f"{metric} = {actual}, forecast expected ~{predicted:.1f} (z={residual_z:.2f})",
+        evidence={
+            "metric": metric,
+            "actual": actual,
+            "predicted": round(predicted, 1),
+            "residual_z": round(residual_z, 2),
+        },
+    )
+
+
+def regime_to_signal(city: str, old_label: str, new_label: str) -> Signal:
+    """Climate-regime change (see regime.py) -> unified signal. Severity
+    is a fixed 0.5, not a computed one: a regime shift is a categorical
+    event (which cluster a city belongs to), not a quantity with a natural
+    magnitude the way a z-score or correlation residual has -- there's no
+    honest way to say one regime change is "more severe" than another."""
+    return Signal(
+        type="regime_change",
+        city=city,
+        severity=0.5,
+        summary=f"shifted from '{old_label}' to '{new_label}' regime",
+        evidence={"old_regime": old_label, "new_regime": new_label},
     )

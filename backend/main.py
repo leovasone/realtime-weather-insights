@@ -14,9 +14,19 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import narrator
+from .air_quality_client import OpenMeteoAirQualityClient, eaqi_band
 from .anomaly import AnomalyDetector
 from .cities import CITIES
-from .signals import Signal, anomaly_to_signal, composite_score, similarity_to_signal
+from .correlation import TRACKED_PAIRS, CorrelationTracker
+from .forecast import ForecastTracker
+from .regime import RegimeTracker
+from .signals import (
+    Signal,
+    air_quality_to_signal,
+    anomaly_to_signal,
+    composite_score,
+    similarity_to_signal,
+)
 from .vector_store import WeatherVectorStore, closeness_label, notable_gaps
 from .weather_client import OpenMeteoClient
 
@@ -58,6 +68,10 @@ manager = ConnectionManager()
 vector_store = WeatherVectorStore()
 detector = AnomalyDetector()
 weather_client = OpenMeteoClient()
+air_quality_client = OpenMeteoAirQualityClient()
+regime_tracker = RegimeTracker(k=3)
+forecaster = ForecastTracker()
+correlation_trackers = [CorrelationTracker(a, b) for a, b in TRACKED_PAIRS]
 
 
 @app.get("/")
@@ -90,33 +104,47 @@ async def ws_endpoint(websocket: WebSocket):
 
 
 async def poll_once():
-    """Poll every city once, run detection + similarity search, broadcast
-    each reading, then (at most once for the whole cycle) ask the narrator
-    for a one-sentence summary if anything noteworthy happened. Split out
-    from poll_loop so it's easy to call directly from tests.
+    """Poll every city once, run every detector, broadcast each reading,
+    then (at most once for the whole cycle) ask the narrator for a
+    one-sentence summary if anything noteworthy happened. Split out from
+    poll_loop so it's easy to call directly from tests.
 
     Every detector's raw output is converted into a `Signal` (see
     signals.py) before anything else happens with it. That's what lets
-    `composite_score()` and the narrator treat anomaly and similarity
-    signals uniformly today, and treat whatever v2 adds (air quality,
-    correlation breaks, forecast misses, regime changes, climatology,
-    nearby natural events) the same way tomorrow -- new sources plug into
-    this same list instead of needing their own bespoke wiring here.
+    `composite_score()` and the narrator treat every signal type
+    uniformly -- anomaly and similarity (v1), plus air quality,
+    correlation breaks, forecast misses, and regime changes (v2 phase 2)
+    -- without each one needing its own bespoke wiring here. Climatology
+    and nearby-natural-event signals (v2 phase 3) plug in the same way
+    later.
     """
     cycle_signals: list[Signal] = []
 
     for city in CITIES:
         try:
-            reading = await weather_client.fetch(
-                city["name"], city["latitude"], city["longitude"]
+            reading, aq_reading = await asyncio.gather(
+                weather_client.fetch(city["name"], city["latitude"], city["longitude"]),
+                air_quality_client.fetch(city["name"], city["latitude"], city["longitude"]),
+                return_exceptions=True,
             )
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover - asyncio.gather itself shouldn't raise here
             log.warning("fetch failed for %s: %s", city["name"], exc)
             continue
+
+        if isinstance(reading, Exception):
+            log.warning("weather fetch failed for %s: %s", city["name"], reading)
+            continue
+        if isinstance(aq_reading, Exception):
+            # Air quality is additive, not load-bearing: the rest of the
+            # cycle proceeds exactly as it would without it, same
+            # "degrade, don't break" pattern as the narrator and Chart.js.
+            log.warning("air quality fetch failed for %s: %s", city["name"], aq_reading)
+            aq_reading = None
 
         reading_dict = asdict(reading)
         anomalies = detector.evaluate(city["name"], reading_dict)
         doc_id = vector_store.add(reading)
+        vector = vector_store.vector_for(reading)
         similar = vector_store.nearest_similar(reading, exclude_id=doc_id)
 
         city_signals: list[Signal] = [
@@ -129,6 +157,25 @@ async def poll_once():
                 closeness=closeness_label(s["distance"]),
                 gaps=notable_gaps(reading, s),
             ))
+
+        if aq_reading is not None:
+            band = eaqi_band(aq_reading.european_aqi)
+            if aq_reading.european_aqi > 40:  # below "moderada" isn't signal-worthy
+                city_signals.append(air_quality_to_signal(
+                    city["name"], aq_reading.european_aqi, aq_reading.pm2_5, band
+                ))
+
+        for tracker in correlation_trackers:
+            sig = tracker.evaluate(city["name"], reading_dict)
+            if sig:
+                city_signals.append(sig)
+
+        city_signals.extend(forecaster.evaluate(city["name"], reading_dict))
+
+        regime_sig = regime_tracker.assign_one(vector_store, city["name"], vector)
+        if regime_sig:
+            city_signals.append(regime_sig)
+
         cycle_signals.extend(city_signals)
 
         await manager.broadcast({
@@ -136,9 +183,11 @@ async def poll_once():
             "reading": reading_dict,
             "anomalies": anomalies,
             "similar_patterns": similar,
-            # Not rendered by the frontend yet (that's phase 4 of the v2
-            # plan -- leaderboard + map). Broadcasting it now is free and
-            # means the UI work later doesn't need a backend change too.
+            # air_quality/composite_score aren't rendered by the frontend
+            # yet (that's phase 4 of the v2 plan -- leaderboard + map).
+            # Broadcasting them now is free and means the UI work later
+            # doesn't need a backend change too.
+            "air_quality": asdict(aq_reading) if aq_reading is not None else None,
             "composite_score": composite_score(city_signals),
         })
 

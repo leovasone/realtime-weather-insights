@@ -64,8 +64,32 @@ Open-Meteo API  →  poll loop (60s)  →  anomaly detector (z-score)
   nearby natural events) each need only a small `*_to_signal()` converter
   to plug into the same composite score and the same narrator, instead of
   becoming their own disconnected panel.
+- **`backend/air_quality_client.py`** — thin async client for Open-Meteo's
+  free, no-key Air Quality API (European AQI, PM2.5, PM10). Feeds the same
+  `Signal` pipeline as everything else via `air_quality_to_signal()`, only
+  once AQI crosses into "moderada" (below that it isn't operationally
+  interesting).
+- **`backend/correlation.py`** — rolling Pearson correlation + ordinary
+  least-squares regression (plain textbook statistics, no numpy) between
+  two metric pairs that normally move together per city (pressure/temperature,
+  humidity/cloud cover). Flags when the *relationship* between two metrics
+  breaks, even if neither metric alone looks anomalous — a different kind of
+  signal than a single metric drifting from its own history.
+- **`backend/forecast.py`** — single exponential smoothing (no seasonality,
+  no trend term) per city, per metric. Flags when a reading lands far from
+  what the smoothed recent trend predicted — catching a value that's
+  trending sharply in one direction, not just one that's an outlier against
+  a flat average. Deliberately simple: level, prediction, and residual stay
+  plain, explainable numbers, not a forecasting model in any serious sense.
+- **`backend/regime.py`** — the one genuinely unsupervised-ML piece of the
+  pipeline: k-means clustering, implemented from scratch (same reasoning as
+  the ChromaDB removal — the data is a few thousand 5-dimensional points at
+  most, so scikit-learn/numpy would be solving a scale problem this app
+  doesn't have). Groups recent readings into descriptive climate regimes
+  (e.g. "quente e úmido") and fires a signal when a city's assignment shifts
+  between cycles.
 - **`backend/main.py`** — FastAPI app: a background task polls every city
-  every 60 seconds, runs both detectors, converts their output into
+  every 60 seconds, runs every detector, converts their output into
   `Signal`s, broadcasts each reading (plus its composite score), and — at
   most once per cycle — asks the narrator for a summary sentence.
 - **`frontend/index.html`** — single-page dashboard: live per-city cards,
@@ -198,3 +222,23 @@ On a normal host (including Railway) the real API call works as-is.
   be surviving restarts during active development -- deliberately left
   out for now rather than reached for by default, the same call made
   about ChromaDB above.
+- Being precise about what each v2 signal actually is, same spirit as the
+  anomaly/narrator note above: air quality is a rule-based threshold on a
+  live API reading, not a model; correlation-break detection is Pearson
+  correlation + OLS regression, textbook statistics; forecast-miss
+  detection is single exponential smoothing, a deliberately simple
+  forecasting technique, not a serious time-series model; climate-regime
+  clustering (k-means) is the one piece of this pipeline that's genuinely
+  unsupervised machine learning. Four different techniques doing four
+  different jobs, each labeled for what it is rather than everything being
+  waved at as "AI."
+- Writing a test for the forecast-miss detector surfaced a real
+  floating-point quirk in `alpha*value + (1-alpha)*level`: feeding the
+  exact same constant float on every call doesn't reproduce that float
+  bit-for-bit, so a test that fed a literal constant "flat" reading
+  actually saw the residual history collapse toward a near-zero spread,
+  which turned an ~1e-13 rounding artifact into what looked like a z-score
+  spike. Not a production bug — real sensor data always has enough natural
+  jitter that this never surfaces — but it meant the test itself needed a
+  small deterministic jitter (±0.1) instead of a literal repeated constant
+  to reflect what real data actually looks like.
