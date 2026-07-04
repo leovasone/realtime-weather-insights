@@ -10,14 +10,17 @@ is configured, exactly like the Chart.js frontend fallback.
 
 Cost control: this is called at most once per poll cycle (every 60s), not
 once per city, and only when there's something to report (at least one
-anomaly or cross-city similarity match that cycle). Uses Haiku, the
-cheapest/fastest Claude model, with a small prompt and a short max_tokens.
+signal -- of any type, see signals.py -- fired that cycle). Uses Haiku,
+the cheapest/fastest Claude model, with a small prompt and a short
+max_tokens.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+
+from .signals import Signal
 
 log = logging.getLogger("weather-insights.narrator")
 
@@ -40,22 +43,33 @@ def is_enabled() -> bool:
     return _enabled
 
 
-def _build_prompt(anomalies: list[dict], similar: list[dict]) -> str:
+def _build_prompt(signals: list[Signal]) -> str:
     lines = []
-    for a in anomalies:
-        lines.append(
-            f"- Anomaly in {a['city']}: {a['metric']} = {a['value']} "
-            f"(z-score {a['z_score']}, recent baseline {a['baseline_mean']})"
-        )
-    for s in similar:
-        gaps = s.get("notable_gaps") or []
-        gaps_note = f" Notable real gaps despite this: {'; '.join(gaps)}." if gaps else ""
-        lines.append(
-            f"- {s['city']} currently resembles {s['matches']} "
-            f"(vector distance {s['distance']}). Pre-computed closeness "
-            f"(use this exact phrase, do not invent your own wording): "
-            f"\"{s['closeness_label']}\".{gaps_note}"
-        )
+    for sig in signals:
+        if sig.type == "anomaly":
+            e = sig.evidence
+            lines.append(
+                f"- Anomaly in {sig.city}: {e['metric']} = {e['value']} "
+                f"(z-score {e['z_score']}, recent baseline {e['baseline_mean']})"
+            )
+        elif sig.type == "similarity":
+            e = sig.evidence
+            gaps = e.get("notable_gaps") or []
+            gaps_note = f" Notable real gaps despite this: {'; '.join(gaps)}." if gaps else ""
+            lines.append(
+                f"- {sig.city} currently resembles {e['matches']} "
+                f"(vector distance {e['distance']}). Pre-computed closeness "
+                f"(use this exact phrase, do not invent your own wording): "
+                f"\"{e['closeness_label']}\".{gaps_note}"
+            )
+        else:
+            # Future signal types (air quality, correlation breaks,
+            # forecast misses, regime changes, climatology, nearby
+            # natural events) fall back to their own plain-language
+            # `summary` until they earn bespoke phrasing here the way
+            # anomaly/similarity have -- new sources work immediately,
+            # tuned prompting for them can follow later.
+            lines.append(f"- {sig.type} signal in {sig.city}: {sig.summary}")
     return (
         "You are annotating a live weather-monitoring dashboard for a portfolio "
         "demo. Given these raw signals from the last 60-second polling cycle, "
@@ -77,16 +91,16 @@ def _build_prompt(anomalies: list[dict], similar: list[dict]) -> str:
     )
 
 
-async def narrate(anomalies: list[dict], similar: list[dict]) -> str | None:
-    """anomalies/similar are flat lists gathered across one full poll cycle
-    (all cities), each tagged with its own city. Returns None if the
-    narrator is disabled, there's nothing noteworthy this cycle, or the API
-    call fails for any reason -- callers should treat that as "no narration
-    this cycle", not an error."""
-    if not _enabled or not (anomalies or similar):
+async def narrate(signals: list[Signal]) -> str | None:
+    """`signals` is the flat, unified list gathered across one full poll
+    cycle (all cities, every signal type -- see signals.py). Returns None
+    if the narrator is disabled, there's nothing noteworthy this cycle, or
+    the API call fails for any reason -- callers should treat that as "no
+    narration this cycle", not an error."""
+    if not _enabled or not signals:
         return None
 
-    prompt = _build_prompt(anomalies, similar)
+    prompt = _build_prompt(signals)
     try:
         resp = await asyncio.to_thread(
             _client.messages.create,

@@ -55,8 +55,18 @@ Open-Meteo API  →  poll loop (60s)  →  anomaly detector (z-score)
   Entirely optional: with no `ANTHROPIC_API_KEY` set, it's a no-op and the
   rest of the dashboard is unaffected — same "degrade, don't break" pattern
   as the Chart.js loader.
+- **`backend/signals.py`** — unified `Signal` schema that every detector's
+  output gets converted into before anything else sees it, plus
+  `composite_score()`, a simple, fully explainable weighted sum that turns
+  however many signals fired for a city into one 0-100 number. This is the
+  v2 groundwork: new sources (air quality, cross-metric correlation
+  breaks, forecast misses, climate-regime clustering, climatology,
+  nearby natural events) each need only a small `*_to_signal()` converter
+  to plug into the same composite score and the same narrator, instead of
+  becoming their own disconnected panel.
 - **`backend/main.py`** — FastAPI app: a background task polls every city
-  every 60 seconds, runs both detectors, broadcasts each reading, and — at
+  every 60 seconds, runs both detectors, converts their output into
+  `Signal`s, broadcasts each reading (plus its composite score), and — at
   most once per cycle — asks the narrator for a summary sentence.
 - **`frontend/index.html`** — single-page dashboard: live per-city cards,
   a temperature chart (Chart.js), a highlighted "AI Narrator" line when
@@ -101,10 +111,11 @@ On a normal host (including Railway) the real API call works as-is.
    dashboard runs exactly the same, just without the narrator line.
 4. Railway assigns a public URL and a `PORT` env var automatically; the
    Dockerfile's `CMD` already binds to `$PORT`.
-5. Pattern history lives in memory (bounded to the last 2,000 readings) and
-   resets on every restart — fine for a demo; swap `vector_store.py` for a
-   persisted backend (Postgres + pgvector, Qdrant, etc.) if you want history
-   to survive restarts in a real deployment.
+5. Pattern history lives in memory (bounded to ~24h of readings across all
+   cities, currently 8,800 entries) and resets on every restart — fine for
+   a demo; swap `vector_store.py` for a persisted backend (Postgres +
+   pgvector, Qdrant, etc.) if you want history to survive restarts in a
+   real deployment.
 
 ## Honest notes
 
@@ -177,3 +188,13 @@ On a normal host (including Railway) the real API call works as-is.
   single-metric gaps in code, and the narrator is now instructed to use
   that exact phrase verbatim and name a concrete gap when one is flagged,
   rather than deciding the wording itself.
+- v2 planning raised the question of whether a real database was needed
+  for the next round of features (24h heatmap, historical percentile,
+  correlation/forecast/regime detectors). It isn't: the data volumes
+  involved are tiny (a handful of numbers per city per minute), so the
+  24h lookback only needed a bigger in-memory bound, and the historical
+  comparison only needs an on-demand call to a climate API, not a
+  database of our own. A real database's only genuine benefit here would
+  be surviving restarts during active development -- deliberately left
+  out for now rather than reached for by default, the same call made
+  about ChromaDB above.

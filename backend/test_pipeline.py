@@ -21,6 +21,7 @@ import shutil
 from dataclasses import asdict
 
 from .anomaly import AnomalyDetector
+from .signals import anomaly_to_signal, composite_score, similarity_to_signal
 from .vector_store import WeatherVectorStore, closeness_label, notable_gaps
 from .weather_client import WeatherReading
 
@@ -71,8 +72,41 @@ def test_closeness_and_gaps():
     print("OK: closeness_label and notable_gaps behave as expected.\n")
 
 
+def test_signals_and_composite_score():
+    """signals.py is the v2 groundwork: every detector's output gets
+    converted into a common `Signal` shape before the narrator or the
+    composite index ever see it. Pin the conversions and the scoring
+    formula directly, since nothing else exercises them end-to-end without
+    a live ANTHROPIC_API_KEY."""
+    borderline_anomaly = {"metric": "temperature_c", "value": 30.0, "z_score": 2.5, "baseline_mean": 20.0}
+    wild_anomaly = {"metric": "temperature_c", "value": 40.0, "z_score": 9.0, "baseline_mean": 20.0}
+
+    borderline_sig = anomaly_to_signal(borderline_anomaly, "São Paulo")
+    wild_sig = anomaly_to_signal(wild_anomaly, "São Paulo")
+    assert borderline_sig.type == "anomaly"
+    assert borderline_sig.severity == 0.0, "z-score right at the detector's own threshold should score 0 severity"
+    assert wild_sig.severity == 1.0, "z-score far past threshold should saturate at 1.0, not grow unbounded"
+
+    close_match = {"city": "Cairo", "distance": 0.049}
+    far_match = {"city": "London", "distance": 0.9}
+    close_sig = similarity_to_signal("Tokyo", close_match, closeness_label(0.049), [])
+    far_sig = similarity_to_signal("Sydney", far_match, closeness_label(0.9), ["vento: 15.0km/h de diferença"])
+    assert close_sig.severity > far_sig.severity, "a closer vector match must score higher severity than a distant one"
+    assert far_sig.evidence["notable_gaps"], "notable_gaps must survive the conversion into the signal's evidence"
+
+    assert composite_score([]) == 0.0, "no signals firing must score exactly 0, not some non-zero floor"
+    quiet_score = composite_score([borderline_sig])
+    loud_score = composite_score([wild_sig, close_sig])
+    assert quiet_score < loud_score, "more/stronger simultaneous signals must push the composite score up"
+    assert 0.0 <= quiet_score <= 100.0 and 0.0 <= loud_score <= 100.0, "composite score must always stay in 0-100"
+
+    print(f"[SIGNALS]  quiet_score={quiet_score}  loud_score={loud_score}")
+    print("OK: signal conversion and composite scoring behave as expected.\n")
+
+
 def main():
     test_closeness_and_gaps()
+    test_signals_and_composite_score()
     persist_dir = "chroma_data_test"
     shutil.rmtree(persist_dir, ignore_errors=True)  # fresh run every time
 

@@ -136,9 +136,16 @@ def notable_gaps(reading: WeatherReading, match: dict) -> list[str]:
 class WeatherVectorStore:
     """Bounded in-memory store; `persist_dir` is accepted for interface
     compatibility but unused -- history resets on process restart, which is
-    fine for a demo (see README)."""
+    fine for a demo (see README).
 
-    def __init__(self, persist_dir: str = "chroma_data", max_size: int = 2000):
+    `max_size` defaults to ~24h of headroom: 6 cities x 1 reading/minute x
+    1440 minutes/day = 8,640 readings/day, rounded up. Each entry is five
+    floats plus a small metadata dict, so the memory cost of this is
+    negligible -- the 24h lookback this enables (a heatmap view, in the v2
+    plan) doesn't need a real database, the same way the similarity search
+    itself didn't need one (see "Honest notes" below)."""
+
+    def __init__(self, persist_dir: str = "chroma_data", max_size: int = 8800):
         self._max_size = max_size
         self._entries = deque(maxlen=max_size)
 

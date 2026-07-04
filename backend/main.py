@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from . import narrator
 from .anomaly import AnomalyDetector
 from .cities import CITIES
+from .signals import Signal, anomaly_to_signal, composite_score, similarity_to_signal
 from .vector_store import WeatherVectorStore, closeness_label, notable_gaps
 from .weather_client import OpenMeteoClient
 
@@ -92,9 +93,17 @@ async def poll_once():
     """Poll every city once, run detection + similarity search, broadcast
     each reading, then (at most once for the whole cycle) ask the narrator
     for a one-sentence summary if anything noteworthy happened. Split out
-    from poll_loop so it's easy to call directly from tests."""
-    cycle_anomalies: list[dict] = []
-    cycle_similar: list[dict] = []
+    from poll_loop so it's easy to call directly from tests.
+
+    Every detector's raw output is converted into a `Signal` (see
+    signals.py) before anything else happens with it. That's what lets
+    `composite_score()` and the narrator treat anomaly and similarity
+    signals uniformly today, and treat whatever v2 adds (air quality,
+    correlation breaks, forecast misses, regime changes, climatology,
+    nearby natural events) the same way tomorrow -- new sources plug into
+    this same list instead of needing their own bespoke wiring here.
+    """
+    cycle_signals: list[Signal] = []
 
     for city in CITIES:
         try:
@@ -110,26 +119,31 @@ async def poll_once():
         doc_id = vector_store.add(reading)
         similar = vector_store.nearest_similar(reading, exclude_id=doc_id)
 
+        city_signals: list[Signal] = [
+            anomaly_to_signal(a, city["name"]) for a in anomalies
+        ]
+        for s in similar[:1]:
+            city_signals.append(similarity_to_signal(
+                city=city["name"],
+                match=s,
+                closeness=closeness_label(s["distance"]),
+                gaps=notable_gaps(reading, s),
+            ))
+        cycle_signals.extend(city_signals)
+
         await manager.broadcast({
             "type": "reading",
             "reading": reading_dict,
             "anomalies": anomalies,
             "similar_patterns": similar,
+            # Not rendered by the frontend yet (that's phase 4 of the v2
+            # plan -- leaderboard + map). Broadcasting it now is free and
+            # means the UI work later doesn't need a backend change too.
+            "composite_score": composite_score(city_signals),
         })
 
-        for a in anomalies:
-            cycle_anomalies.append({**a, "city": city["name"]})
-        for s in similar[:1]:
-            cycle_similar.append({
-                "city": city["name"],
-                "matches": s["city"],
-                "distance": s["distance"],
-                "closeness_label": closeness_label(s["distance"]),
-                "notable_gaps": notable_gaps(reading, s),
-            })
-
     if narrator.is_enabled():
-        text = await narrator.narrate(cycle_anomalies, cycle_similar)
+        text = await narrator.narrate(cycle_signals)
         if text:
             await manager.broadcast({"type": "narrative", "text": text})
 
