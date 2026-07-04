@@ -91,10 +91,19 @@ Open-Meteo API  →  poll loop (60s)  →  anomaly detector (z-score)
 - **`backend/retail_signals.py`** — thin async client for Alpha Vantage's
   free `GLOBAL_QUOTE` endpoint, tracking 3 US-listed retail/consumer stocks
   with a publicly documented seasonal or event-driven sensitivity to
-  weather (Generac/generators, Home Depot, PepsiCo). Deliberately **not**
-  wired into the `Signal`/`composite_score` pipeline the other detectors
-  share — see "Honest notes" for why. Runs on its own slow loop (every 4h,
-  not every 60s) to stay well under the free tier's 25-requests/day cap.
+  weather (Generac/generators, Home Depot, PepsiCo), plus
+  `ClimateRetailCorrelationTracker`: a real Pearson correlation (reusing
+  `statutils.pearson()`) between each ticker's daily price move and this
+  dashboard's own daily temperature-anomaly count, computed only once
+  there's enough overlapping daily history (15+ days) to mean something.
+  Deliberately **not** wired into the `Signal`/`composite_score` pipeline
+  the other detectors share — see "Honest notes" for why. The stock quotes
+  run on their own slow loop (every 4h, not every 60s) to stay well under
+  the free tier's 25-requests/day cap.
+- **`backend/statutils.py`** — shared `pearson()` implementation, used by
+  both `correlation.py` (weather-metric correlation breaks) and
+  `retail_signals.py` (climate/retail correlation), so the same textbook
+  formula backs every correlation number in the app.
 - **`backend/main.py`** — FastAPI app: a background task polls every city
   every 60 seconds, runs every detector, converts their output into
   `Signal`s, broadcasts each reading (plus its composite score), and — at
@@ -264,9 +273,34 @@ On a normal host (including Railway) the real API call works as-is.
   unusual relative to what we've been observing." A national retailer's
   daily stock move cannot honestly be attributed to a single city's live
   weather reading — that's one data point among dozens of real drivers
-  having nothing to do with weather. So it stays a plain informational
-  feed (today's price + a static, publicly-documented note like "demand
-  historically rises with storms"), not a claimed real-time correlation,
-  and it's excluded from the composite score and never phrased by the
-  narrator as a detected relationship. The panel also carries an explicit
-  disclaimer in the UI: informational context, not investment advice.
+  having nothing to do with weather. So it's excluded from the composite
+  score and never phrased by the narrator as a detected relationship, and
+  the panel carries an explicit UI disclaimer.
+- Initially the retail panel showed only a static per-ticker note ("demand
+  historically rises with storms") with no real calculation behind it —
+  which, fairly, felt like it added nothing. `ClimateRetailCorrelationTracker`
+  replaced that with an actual Pearson correlation between each ticker's
+  daily price move and this dashboard's own daily count of temperature
+  anomalies (across all 6 cities), gated behind a 15-day minimum so a
+  freshly-deployed dashboard never shows a big, meaningless-looking number
+  from 2-3 days of data. It stays intentionally narrow about what it
+  measures: only temperature anomalies count as "climate" here, not storms
+  or wind, so a weak correlation for e.g. Generac (whose real driver is
+  storm/outage frequency, not temperature) doesn't mean there's no real
+  relationship — only that this particular proxy doesn't capture it. The
+  correlation resets on every restart (in-memory only, same tradeoff as
+  `vector_store.py`), and both the number and its caveats are always shown
+  together, never the number alone.
+- Building the correlation tracker's test surfaced a real bug in the first
+  version: days with zero temperature anomalies were never added to the
+  per-day dictionary at all (only `record_temperature_anomaly()` touched
+  it, and that's only called when an anomaly actually fires), so every
+  "quiet" day silently vanished from the correlation instead of counting
+  as a legitimate `(0 anomalies, today's price move)` data point. A
+  20-day synthetic test with a known 1:1 relationship only ever recovered
+  15 paired days (`n=15` instead of `n=20`) until this was caught. Fixed by
+  anchoring on every day a price was recorded and defaulting the anomaly
+  count to 0 for days with none, rather than only pairing days where both
+  sides happened to have an entry — the same kind of selection-bias bug as
+  the vector store's original same-city leak, just in a correlation
+  instead of a nearest-neighbor search.

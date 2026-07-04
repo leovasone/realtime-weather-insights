@@ -21,7 +21,11 @@ from .cities import CITIES
 from .correlation import TRACKED_PAIRS, CorrelationTracker
 from .forecast import ForecastTracker
 from .regime import RegimeTracker
-from .retail_signals import DISCLAIMER as RETAIL_DISCLAIMER, AlphaVantageRetailClient
+from .retail_signals import (
+    DISCLAIMER as RETAIL_DISCLAIMER,
+    AlphaVantageRetailClient,
+    ClimateRetailCorrelationTracker,
+)
 from .signals import (
     Signal,
     air_quality_to_signal,
@@ -82,6 +86,7 @@ correlation_trackers = [CorrelationTracker(a, b) for a, b in TRACKED_PAIRS]
 
 _alpha_vantage_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
 retail_client = AlphaVantageRetailClient(_alpha_vantage_key) if _alpha_vantage_key else None
+climate_retail_correlation = ClimateRetailCorrelationTracker()
 
 
 @app.get("/")
@@ -161,6 +166,12 @@ async def poll_once():
         city_signals: list[Signal] = [
             anomaly_to_signal(a, city["name"]) for a in anomalies
         ]
+        for a in anomalies:
+            if a["metric"] == "temperature_c":
+                # Feeds the retail correlation tracker's "climate" side --
+                # see retail_signals.py for why only temperature (not
+                # every metric) counts here.
+                climate_retail_correlation.record_temperature_anomaly()
         for s in similar[:1]:
             city_signals.append(similarity_to_signal(
                 city=city["name"],
@@ -215,11 +226,12 @@ async def poll_loop():
 
 
 async def retail_once():
-    """Fetch the small fixed set of weather-sensitive retail stocks and
-    broadcast them as their own message type. Kept fully separate from
-    poll_once()/cycle_signals -- see retail_signals.py for why this stays
-    a plain informational feed rather than a Signal the composite score
-    or narrator would treat as a detected correlation."""
+    """Fetch the small fixed set of weather-sensitive retail stocks,
+    record today's price move against today's temperature-anomaly count,
+    and broadcast both the quote and its (possibly still-accumulating)
+    real correlation. Kept fully separate from poll_once()/cycle_signals
+    -- see retail_signals.py for why this stays outside the Signal/
+    composite_score system the other detectors share."""
     if retail_client is None:
         return
     try:
@@ -228,9 +240,15 @@ async def retail_once():
         log.warning("retail quote fetch failed: %s", exc)
         return
     if quotes:
+        payload = []
+        for q in quotes:
+            climate_retail_correlation.record_quote(q.symbol, q.change_percent)
+            quote_dict = asdict(q)
+            quote_dict["correlation"] = climate_retail_correlation.correlation_for(q.symbol)
+            payload.append(quote_dict)
         await manager.broadcast({
             "type": "retail",
-            "quotes": [asdict(q) for q in quotes],
+            "quotes": payload,
             "disclaimer": RETAIL_DISCLAIMER,
         })
 

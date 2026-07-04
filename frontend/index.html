@@ -40,6 +40,7 @@
   .retail-quote .rchange{ display:block; margin-top:2px; font-size:0.78rem; }
   .retail-quote .rchange.up{ color:var(--accent); }
   .retail-quote .rchange.down{ color:var(--danger); }
+  .retail-quote .rcorr{ display:block; margin-top:6px; font-size:0.68rem; color:var(--text-dim); max-width:360px; font-family:var(--mono); }
   .retail-disclaimer{ font-size:0.68rem; color:var(--text-dim); margin-top:14px; font-style:italic; line-height:1.4; }
   .insights-panel h2{ font-size:1rem; margin-bottom:14px; }
   /* The narrator box above stays fully visible at all times (normal document
@@ -234,10 +235,13 @@ function handleNarrative(msg){
   box.innerHTML = `<span class="tag">// AI NARRATOR · CLAUDE</span>${msg.text}`;
 }
 
-// Purely informational: today's price for a handful of weather-sensitive
-// retail stocks, shown next to the live weather data -- not a computed
-// correlation or a trading signal. See backend/retail_signals.py for why
-// this is deliberately kept separate from the anomaly/insights pipeline.
+// Today's price for a handful of weather-sensitive retail stocks, shown
+// next to the live weather data, plus a real (if modest) Pearson
+// correlation between each ticker's daily move and this dashboard's own
+// temperature-anomaly count -- computed in backend/retail_signals.py,
+// never faked or shown before there's enough daily history to mean
+// anything. Still not wired into the anomaly/insights pipeline -- see
+// retail_signals.py for why.
 function handleRetail(msg){
   const box = document.getElementById('retailQuotes');
   const disclaimer = document.getElementById('retailDisclaimer');
@@ -246,6 +250,10 @@ function handleRetail(msg){
   (msg.quotes || []).forEach(q => {
     const dir = q.change_percent > 0 ? 'up' : (q.change_percent < 0 ? 'down' : '');
     const sign = q.change_percent > 0 ? '+' : '';
+    const corr = q.correlation || {};
+    const corrLine = (corr.r === null || corr.r === undefined)
+      ? (corr.note || '')
+      : `r=${corr.r} (n=${corr.n}) — ${corr.note}`;
     const el = document.createElement('div');
     el.className = 'retail-quote';
     el.innerHTML =
@@ -253,6 +261,7 @@ function handleRetail(msg){
         <span class="rsym">${q.symbol}</span>
         <span class="rname">${q.name}</span>
         <span class="rcontext">${q.context}</span>
+        <span class="rcorr">${corrLine}</span>
       </div>
       <div class="rprice-block">
         US$ ${q.price.toFixed(2)}

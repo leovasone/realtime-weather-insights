@@ -19,6 +19,7 @@ import statistics
 from collections import defaultdict, deque
 
 from .signals import Signal, correlation_break_to_signal
+from .statutils import pearson
 
 # Metric pairs worth tracking, and the minimum |r| for an established
 # relationship to even be worth checking for a break -- a pair with no
@@ -29,17 +30,6 @@ TRACKED_PAIRS = [
 ]
 _MIN_CORRELATION = 0.5
 _RESIDUAL_Z_THRESHOLD = 2.5
-
-
-def _pearson(xs: list[float], ys: list[float]) -> float:
-    n = len(xs)
-    mx, my = sum(xs) / n, sum(ys) / n
-    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
-    sx = sum((x - mx) ** 2 for x in xs) ** 0.5
-    sy = sum((y - my) ** 2 for y in ys) ** 0.5
-    if sx == 0 or sy == 0:
-        return 0.0
-    return cov / (sx * sy)
 
 
 def _linreg(xs: list[float], ys: list[float]) -> tuple[float, float]:
@@ -72,7 +62,7 @@ class CorrelationTracker:
 
         xs = [p[0] for p in series]
         ys = [p[1] for p in series]
-        r = _pearson(xs, ys)
+        r = pearson(xs, ys)
         if abs(r) < _MIN_CORRELATION:
             return None  # no established relationship here to break
 

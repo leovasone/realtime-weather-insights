@@ -29,7 +29,7 @@ from .anomaly import AnomalyDetector
 from .correlation import CorrelationTracker
 from .forecast import ForecastTracker
 from .regime import RegimeTracker, _label_centroid, kmeans
-from .retail_signals import AlphaVantageRetailClient
+from .retail_signals import AlphaVantageRetailClient, ClimateRetailCorrelationTracker
 from .signals import air_quality_to_signal, anomaly_to_signal, composite_score, similarity_to_signal
 from .vector_store import WeatherVectorStore, closeness_label, notable_gaps
 from .weather_client import WeatherReading
@@ -291,6 +291,45 @@ def test_retail_signals():
     print("OK: retail stock client parses good quotes and degrades cleanly on rate limits/bad data.\n")
 
 
+def test_climate_retail_correlation():
+    """ClimateRetailCorrelationTracker must stay silent (r=None) below its
+    minimum day threshold -- a correlation over a handful of days is noise,
+    not signal, and showing a number anyway would look like a discovery
+    that isn't there. Once there's enough paired history, it should
+    recover a real, calculable correlation from synthetic data with a
+    known, deliberate relationship. `day=` lets the test simulate many
+    calendar days without waiting for real ones to pass."""
+    tracker = ClimateRetailCorrelationTracker(min_days=15, max_history_days=120)
+
+    for i in range(5):
+        day = f"2026-01-{i + 1:02d}"
+        tracker.record_temperature_anomaly(day=day)
+        tracker.record_quote("TEST", change_percent=1.0, day=day)
+    early = tracker.correlation_for("TEST")
+    assert early["r"] is None, "must not compute a correlation below the minimum day threshold"
+    assert early["n"] == 5
+    assert "5/15" in early["note"]
+
+    # Enough days, with a clean synthetic linear relationship: more
+    # anomalies that day -> proportionally bigger price move. Pearson
+    # should recover something close to a perfect positive correlation.
+    tracker2 = ClimateRetailCorrelationTracker(min_days=15, max_history_days=120)
+    for i in range(20):
+        day = f"2026-02-{i + 1:02d}"
+        count = i % 4  # 0..3 anomalies that day
+        for _ in range(count):
+            tracker2.record_temperature_anomaly(day=day)
+        tracker2.record_quote("TEST", change_percent=count * 0.5, day=day)
+    result = tracker2.correlation_for("TEST")
+    assert result["r"] is not None, "expected enough days to compute a real correlation"
+    assert result["n"] == 20
+    assert result["r"] > 0.9, f"expected a strong positive correlation from perfectly linear synthetic data, got {result}"
+    assert "forte" in result["note"]
+    print(f"[RETAIL-CORRELATION]  insufficient-data note: {early['note']}")
+    print(f"[RETAIL-CORRELATION]  sufficient-data result: r={result['r']} n={result['n']}")
+    print("OK: correlation tracker stays honestly silent on too little data and recovers a real correlation once there's enough.\n")
+
+
 def main():
     test_closeness_and_gaps()
     test_signals_and_composite_score()
@@ -299,6 +338,7 @@ def main():
     test_forecast_miss()
     test_regime_clustering()
     test_retail_signals()
+    test_climate_retail_correlation()
     persist_dir = "chroma_data_test"
     shutil.rmtree(persist_dir, ignore_errors=True)  # fresh run every time
 
