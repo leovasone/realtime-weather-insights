@@ -16,15 +16,20 @@ Run: python -m backend.test_pipeline
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import random
 import shutil
 from dataclasses import asdict
+
+import httpx
 
 from .air_quality_client import eaqi_band
 from .anomaly import AnomalyDetector
 from .correlation import CorrelationTracker
 from .forecast import ForecastTracker
 from .regime import RegimeTracker, _label_centroid, kmeans
+from .retail_signals import AlphaVantageRetailClient
 from .signals import air_quality_to_signal, anomaly_to_signal, composite_score, similarity_to_signal
 from .vector_store import WeatherVectorStore, closeness_label, notable_gaps
 from .weather_client import WeatherReading
@@ -242,6 +247,50 @@ def test_regime_clustering():
     print("OK: k-means separates clusters and RegimeTracker detects real regime changes.\n")
 
 
+def test_retail_signals():
+    """AlphaVantageRetailClient never touches the network in this test -- an
+    httpx.MockTransport stands in for Alpha Vantage's GLOBAL_QUOTE endpoint
+    so the parsing and "degrade, don't break" behavior (rate limit / bad
+    symbol / malformed field) can be pinned without a live API key. See
+    retail_signals.py for why this stays a plain informational feed, not a
+    Signal wired into composite_score."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        symbol = request.url.params.get("symbol")
+        if symbol == "GNRC":
+            return httpx.Response(200, json={
+                "Global Quote": {
+                    "01. symbol": "GNRC",
+                    "05. price": "142.50",
+                    "07. latest trading day": "2026-07-03",
+                    "09. change": "1.20",
+                    "10. change percent": "0.85%",
+                }
+            })
+        if symbol == "HD":
+            # Simulates a rate-limited response: Alpha Vantage returns an
+            # "Information" field instead of "Global Quote" when the
+            # free-tier daily cap is hit, not an HTTP error.
+            return httpx.Response(200, json={"Information": "rate limit reached"})
+        if symbol == "PEP":
+            # Malformed price field -- must not raise, must skip cleanly.
+            return httpx.Response(200, json={
+                "Global Quote": {"05. price": "not-a-number", "10. change percent": "0%"}
+            })
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    client = AlphaVantageRetailClient(api_key="test-key", transport=transport)
+
+    quotes = asyncio.run(client.fetch_all())
+    assert len(quotes) == 1, f"expected only the well-formed GNRC quote to survive, got {quotes}"
+    assert quotes[0].symbol == "GNRC"
+    assert quotes[0].price == 142.50
+    assert quotes[0].change_percent == 0.85
+    assert quotes[0].context, "every ticker must carry its static weather-link context"
+    print(f"[RETAIL]  surviving quotes: {[q.symbol for q in quotes]} (rate-limited HD and malformed PEP both skipped cleanly)")
+    print("OK: retail stock client parses good quotes and degrades cleanly on rate limits/bad data.\n")
+
+
 def main():
     test_closeness_and_gaps()
     test_signals_and_composite_score()
@@ -249,6 +298,7 @@ def main():
     test_correlation_break()
     test_forecast_miss()
     test_regime_clustering()
+    test_retail_signals()
     persist_dir = "chroma_data_test"
     shutil.rmtree(persist_dir, ignore_errors=True)  # fresh run every time
 

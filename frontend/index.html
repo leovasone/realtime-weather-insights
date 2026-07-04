@@ -20,6 +20,7 @@
   .dot{ width:9px; height:9px; border-radius:50%; background:var(--danger); }
   .dot.on{ background:var(--accent); box-shadow:0 0 8px var(--accent); }
   .layout{ display:grid; grid-template-columns:2fr 1fr; gap:24px; align-items:start; }
+  .left-col{ display:flex; flex-direction:column; gap:24px; }
   .cities-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(200px,1fr)); gap:14px; margin-bottom:20px; }
   .city-card{ background:var(--panel); border:1px solid var(--panel-border); border-radius:var(--radius); padding:16px; }
   .city-card h3{ font-size:0.95rem; margin-bottom:8px; }
@@ -28,6 +29,18 @@
   .city-card.flagged{ border-color:var(--danger); }
   .chart-wrap{ background:var(--panel); border:1px solid var(--panel-border); border-radius:var(--radius); padding:18px; height:340px; }
   .insights-panel{ background:var(--panel); border:1px solid var(--panel-border); border-radius:var(--radius); padding:18px; }
+  .retail-panel{ background:var(--panel); border:1px solid var(--panel-border); border-radius:var(--radius); padding:18px; }
+  .retail-panel h2{ font-size:1rem; margin-bottom:14px; }
+  .retail-quote{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; padding:10px 0; border-bottom:1px solid var(--panel-border); }
+  .retail-quote:last-child{ border-bottom:none; }
+  .retail-quote .rsym{ font-family:var(--mono); font-weight:700; font-size:0.9rem; }
+  .retail-quote .rname{ font-size:0.72rem; color:var(--text-dim); display:block; margin-top:2px; }
+  .retail-quote .rcontext{ font-size:0.7rem; color:var(--text-dim); display:block; margin-top:4px; max-width:360px; }
+  .retail-quote .rprice-block{ text-align:right; white-space:nowrap; font-family:var(--mono); font-size:0.85rem; }
+  .retail-quote .rchange{ display:block; margin-top:2px; font-size:0.78rem; }
+  .retail-quote .rchange.up{ color:var(--accent); }
+  .retail-quote .rchange.down{ color:var(--danger); }
+  .retail-disclaimer{ font-size:0.68rem; color:var(--text-dim); margin-top:14px; font-style:italic; line-height:1.4; }
   .insights-panel h2{ font-size:1rem; margin-bottom:14px; }
   /* The narrator box above stays fully visible at all times (normal document
      flow, not scrollable) -- only the list of individual insight cards below
@@ -58,7 +71,14 @@
 <div class="cities-grid" id="citiesGrid"></div>
 
 <div class="layout">
-  <div class="chart-wrap" id="chartWrap"><canvas id="tempChart"></canvas></div>
+  <div class="left-col">
+    <div class="chart-wrap" id="chartWrap"><canvas id="tempChart"></canvas></div>
+    <div class="retail-panel">
+      <h2>// Clima → Varejo</h2>
+      <div id="retailQuotes"><p class="empty">Aguardando dados de mercado...</p></div>
+      <p class="retail-disclaimer" id="retailDisclaimer"></p>
+    </div>
+  </div>
   <div class="insights-panel">
     <h2>// AI Insights</h2>
     <div id="narratorBox" class="narrator-box"></div>
@@ -214,6 +234,35 @@ function handleNarrative(msg){
   box.innerHTML = `<span class="tag">// AI NARRATOR · CLAUDE</span>${msg.text}`;
 }
 
+// Purely informational: today's price for a handful of weather-sensitive
+// retail stocks, shown next to the live weather data -- not a computed
+// correlation or a trading signal. See backend/retail_signals.py for why
+// this is deliberately kept separate from the anomaly/insights pipeline.
+function handleRetail(msg){
+  const box = document.getElementById('retailQuotes');
+  const disclaimer = document.getElementById('retailDisclaimer');
+  if(!box) return;
+  box.innerHTML = '';
+  (msg.quotes || []).forEach(q => {
+    const dir = q.change_percent > 0 ? 'up' : (q.change_percent < 0 ? 'down' : '');
+    const sign = q.change_percent > 0 ? '+' : '';
+    const el = document.createElement('div');
+    el.className = 'retail-quote';
+    el.innerHTML =
+      `<div>
+        <span class="rsym">${q.symbol}</span>
+        <span class="rname">${q.name}</span>
+        <span class="rcontext">${q.context}</span>
+      </div>
+      <div class="rprice-block">
+        US$ ${q.price.toFixed(2)}
+        <span class="rchange ${dir}">${sign}${q.change_percent.toFixed(2)}%</span>
+      </div>`;
+    box.appendChild(el);
+  });
+  if(msg.disclaimer && disclaimer) disclaimer.textContent = msg.disclaimer;
+}
+
 function connect(){
   const ws = new WebSocket(WS_URL);
   ws.onopen = () => { statusDot.classList.add('on'); statusText.textContent = 'ao vivo'; };
@@ -223,6 +272,7 @@ function connect(){
     const msg = JSON.parse(ev.data);
     if(msg.type === 'reading') handleReading(msg);
     if(msg.type === 'narrative') handleNarrative(msg);
+    if(msg.type === 'retail') handleRetail(msg);
   };
 }
 connect();

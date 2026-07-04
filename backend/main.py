@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import asdict
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from .cities import CITIES
 from .correlation import TRACKED_PAIRS, CorrelationTracker
 from .forecast import ForecastTracker
 from .regime import RegimeTracker
+from .retail_signals import DISCLAIMER as RETAIL_DISCLAIMER, AlphaVantageRetailClient
 from .signals import (
     Signal,
     air_quality_to_signal,
@@ -34,6 +36,11 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("weather-insights")
 
 POLL_INTERVAL_SECONDS = 60
+# Alpha Vantage's free tier caps at 25 requests/day; with 3 tickers, a 4h
+# cadence is 3 x 6 = 18 calls/day -- well under the cap with margin for
+# retries. Deliberately a separate, much slower loop from the weather poll,
+# not folded into poll_once().
+RETAIL_POLL_INTERVAL_SECONDS = 4 * 60 * 60
 
 app = FastAPI(title="Realtime Weather Insights")
 
@@ -73,6 +80,9 @@ regime_tracker = RegimeTracker(k=3)
 forecaster = ForecastTracker()
 correlation_trackers = [CorrelationTracker(a, b) for a, b in TRACKED_PAIRS]
 
+_alpha_vantage_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
+retail_client = AlphaVantageRetailClient(_alpha_vantage_key) if _alpha_vantage_key else None
+
 
 @app.get("/")
 async def root():
@@ -88,6 +98,7 @@ async def health():
         "status": "ok",
         "clients": len(manager.active),
         "narrator_enabled": narrator.is_enabled(),
+        "retail_panel_enabled": retail_client is not None,
     }
 
 
@@ -203,6 +214,35 @@ async def poll_loop():
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
+async def retail_once():
+    """Fetch the small fixed set of weather-sensitive retail stocks and
+    broadcast them as their own message type. Kept fully separate from
+    poll_once()/cycle_signals -- see retail_signals.py for why this stays
+    a plain informational feed rather than a Signal the composite score
+    or narrator would treat as a detected correlation."""
+    if retail_client is None:
+        return
+    try:
+        quotes = await retail_client.fetch_all()
+    except Exception as exc:
+        log.warning("retail quote fetch failed: %s", exc)
+        return
+    if quotes:
+        await manager.broadcast({
+            "type": "retail",
+            "quotes": [asdict(q) for q in quotes],
+            "disclaimer": RETAIL_DISCLAIMER,
+        })
+
+
+async def retail_loop():
+    while True:
+        await retail_once()
+        await asyncio.sleep(RETAIL_POLL_INTERVAL_SECONDS)
+
+
 @app.on_event("startup")
 async def start_background_task():
     asyncio.create_task(poll_loop())
+    if retail_client is not None:
+        asyncio.create_task(retail_loop())

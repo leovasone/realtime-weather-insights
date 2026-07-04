@@ -88,13 +88,23 @@ Open-Meteo API  →  poll loop (60s)  →  anomaly detector (z-score)
   doesn't have). Groups recent readings into descriptive climate regimes
   (e.g. "quente e úmido") and fires a signal when a city's assignment shifts
   between cycles.
+- **`backend/retail_signals.py`** — thin async client for Alpha Vantage's
+  free `GLOBAL_QUOTE` endpoint, tracking 3 US-listed retail/consumer stocks
+  with a publicly documented seasonal or event-driven sensitivity to
+  weather (Generac/generators, Home Depot, PepsiCo). Deliberately **not**
+  wired into the `Signal`/`composite_score` pipeline the other detectors
+  share — see "Honest notes" for why. Runs on its own slow loop (every 4h,
+  not every 60s) to stay well under the free tier's 25-requests/day cap.
 - **`backend/main.py`** — FastAPI app: a background task polls every city
   every 60 seconds, runs every detector, converts their output into
   `Signal`s, broadcasts each reading (plus its composite score), and — at
-  most once per cycle — asks the narrator for a summary sentence.
+  most once per cycle — asks the narrator for a summary sentence. A second,
+  independent background task (only started if `ALPHA_VANTAGE_API_KEY` is
+  set) polls the retail stock quotes on its own 4-hour cadence.
 - **`frontend/index.html`** — single-page dashboard: live per-city cards,
-  a temperature chart (Chart.js), a highlighted "AI Narrator" line when
-  enabled, and a live-updating raw insights feed.
+  a temperature chart (Chart.js), a "Clima → Varejo" panel showing the
+  weather-sensitive retail stocks (when configured), a highlighted "AI
+  Narrator" line when enabled, and a live-updating raw insights feed.
 
 ## Running locally
 
@@ -132,7 +142,12 @@ On a normal host (including Railway) the real API call works as-is.
    enable it, add an `ANTHROPIC_API_KEY` environment variable in Railway's
    service Variables tab (get a key at
    [console.anthropic.com](https://console.anthropic.com)). Without it, the
-   dashboard runs exactly the same, just without the narrator line.
+   dashboard runs exactly the same, just without the narrator line. The
+   "Clima → Varejo" retail stock panel is also optional: add an
+   `ALPHA_VANTAGE_API_KEY` (free tier at
+   [alphavantage.co](https://www.alphavantage.co/support/#api-key)) to
+   enable it; without it, that panel simply stays empty and nothing else
+   is affected.
 4. Railway assigns a public URL and a `PORT` env var automatically; the
    Dockerfile's `CMD` already binds to `$PORT`.
 5. Pattern history lives in memory (bounded to ~24h of readings across all
@@ -242,3 +257,16 @@ On a normal host (including Railway) the real API call works as-is.
   jitter that this never surfaces — but it meant the test itself needed a
   small deterministic jitter (±0.1) instead of a literal repeated constant
   to reflect what real data actually looks like.
+- The retail stock panel (`retail_signals.py`) is deliberately kept out of
+  the `Signal`/`composite_score` system every other detector feeds into.
+  Every other detector computes something from this app's own live data
+  (these 6 cities' actual weather readings) and can honestly say "this is
+  unusual relative to what we've been observing." A national retailer's
+  daily stock move cannot honestly be attributed to a single city's live
+  weather reading — that's one data point among dozens of real drivers
+  having nothing to do with weather. So it stays a plain informational
+  feed (today's price + a static, publicly-documented note like "demand
+  historically rises with storms"), not a claimed real-time correlation,
+  and it's excluded from the composite score and never phrased by the
+  narrator as a detected relationship. The panel also carries an explicit
+  disclaimer in the UI: informational context, not investment advice.
